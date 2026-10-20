@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>한녕 업데이트</title>
+    <link>https://gityeop.github.io/hannyeong/</link>
+    <description>한녕의 정식 업데이트</description>
+    <language>ko</language>
+    <item>
+      <title>한녕 0.4.1</title>
+      <sparkle:version>110</sparkle:version>
+      <sparkle:shortVersionString>0.4.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0.0</sparkle:minimumSystemVersion>
+      <link>https://github.com/gityeop/hannyeong/releases/tag/v0.4.1</link>
+      <sparkle:informationalUpdate/>
+    </item>
+  </channel>
+</rss>
