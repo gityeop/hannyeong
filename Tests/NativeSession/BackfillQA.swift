@@ -14,6 +14,7 @@ private final class Fixture {
     var session: CompositionSession!
 
     init(prefix: String, store: CorrectionStore, local: LocalDecisionClient,
+         axParagraphOffset: Int = 0,
          onPreview: ((String?) -> Void)? = nil) {
         view.isRichText = false
         view.string = prefix
@@ -29,14 +30,14 @@ private final class Fixture {
                                          guard view.selectCommittedText(in: range, expected: expected) else {
                                              throw LocalDecisionError(detail: "Native committed selection text changed")
                                          }
-                                         return range
+                                         return NSRange(location: range.location - axParagraphOffset, length: range.length)
                                      }, confirmCommittedText: { [view] expected in
                                          let end = view.selectedRange().location
                                          guard end >= expected.utf16.count,
                                                (view.string as NSString).substring(with: NSRange(location: end - expected.utf16.count, length: expected.utf16.count)) == expected else {
                                              throw LocalDecisionError(detail: "Native commit suffix differs")
                                          }
-                                         return end
+                                         return end - axParagraphOffset
                                      }, forwardHostEvent: { [view] event in view.applyHostEvent(event) },
                                      onPreview: onPreview) { [weak self] message in
             self?.errors.append(message)
@@ -139,8 +140,21 @@ private struct BackfillQA {
         try await immediate.settle()
         try expect(immediate, "to go home ", "immediateWordsStillBackfill")
 
+        // Chromium paragraph boundaries have different offsets in IMK and AX.
+        let paragraphPrefix = "문단 하나.\n문단 둘.\n"
+        let paragraphs = Fixture(prefix: paragraphPrefix, store: store, local: local, axParagraphOffset: 2)
+        paragraphs.type("to go home ")
+        try await paragraphs.settle()
+        try expect(paragraphs, paragraphPrefix + "to go home ", "paragraphCoordinateRewrite")
+        paragraphs.session.toggleLanguage()
+        try expect(paragraphs, paragraphPrefix + "to go ㅙㅡㄷ ", "paragraphCoordinateToggle")
+        paragraphs.session.toggleLanguage()
+        try expect(paragraphs, paragraphPrefix + "to go home ", "paragraphCoordinateToggleBack")
+        await paragraphs.session.finishLearning()
+
         // Space-separated words, including fast typing while inference is pending.
         let cases: [(String, String, String)] = [
+            ("reportedSentenceMiddle", "wlrma cjfja dlfjgrp clekrk to go home gkaus ", "지금 처럼 이렇게 치다가 to go home 하면 "),
             ("backfill", "to go home ", "to go home "),
             ("repeatedWord", "to go go home ", "to go go home "),
             ("repeatedGo", "go go go home ", "go go go home "),

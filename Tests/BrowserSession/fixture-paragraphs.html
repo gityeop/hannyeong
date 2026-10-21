@@ -1,0 +1,8 @@
+<!doctype html><meta charset="utf-8"><title>Hannyeong IMK QA — paragraphs</title>
+<style>[contenteditable]{width:90vw;height:80vh;font:24px sans-serif;white-space:pre-wrap}</style>
+<div contenteditable role="textbox" aria-multiline="true"><p>문단 하나.</p><p>문단 둘.</p><p>to go home </p></div>
+<script>
+const field=document.querySelector('[contenteditable]');field.focus();
+const range=document.createRange();range.selectNodeContents(field.lastElementChild);range.collapse(false);
+const selection=getSelection();selection.removeAllRanges();selection.addRange(range);
+</script>

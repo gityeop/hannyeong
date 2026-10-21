@@ -707,9 +707,18 @@ final class CompositionSession {
         let (decided, other) = (results[0], results[1])
         let anchor = decided.text == other.text && min(decided.confidence, other.confidence) >= Backfill.anchor
             ? try anchorLanguage(of: decided.text, raw: word.raw) : nil
+        var otherText = other.text
+        // A Korean prefix can bias both chains toward Korean. Keep an unsure next
+        // word in the alternate chain's language until a confident anchor resolves it.
+        if anchor == nil, let direction = try language(of: previous.other[0], raw: previous.words[0].raw),
+           try language(of: otherText, raw: word.raw) != direction,
+           let alternate = try otherReading(of: other, for: word),
+           try language(of: alternate, raw: word.raw) == direction {
+            otherText = alternate
+        }
         recent.words.append(word)
         recent.decided.append(decided.text)
-        recent.other.append(other.text)
+        recent.other.append(otherText)
         var keep = false
         var replace = false
         if let confirming = recent.confirming {
@@ -822,6 +831,12 @@ final class CompositionSession {
                         throw SessionError("Committed rewrite ended at a different position.")
                     }
                     self.contextSelection = self.client.selectedRange()
+                    // IMK and AX use different paragraph offsets. Keep IMK edit records in IMK coordinates.
+                    if let caret = self.contextSelection, caret.location != NSNotFound, caret.length == 0,
+                       caret.location >= anchor.text.utf16.count {
+                        self.lastCommit?.range = NSRange(location: caret.location - anchor.text.utf16.count,
+                                                        length: anchor.text.utf16.count)
+                    }
                     AppSupport.shared.clearError()
                 } catch { self.report(error) }
                 self.rewriteTask = nil

@@ -51,12 +51,15 @@ enum CommittedTextSelection {
                    AXValueGetValue(selected as! AXValue, .cfRange, &caret), caret.length == 0,
                    caret.location >= expectedSuffix.utf16.count {
                     var text: CFTypeRef?
-                    // Chromium can return AXNoValue for a range while applying Backspace.
-                    try check(AXUIElementCopyAttributeValue(field, kAXValueAttribute as CFString, &text), "committed value")
-                    guard let text = text as? String else { throw Failure.invalidTarget("committed value is not text") }
-                    let value = text as NSString
-                    let span = NSRange(location: caret.location - expectedSuffix.utf16.count, length: expectedSuffix.utf16.count)
-                    if caret.location <= value.length, value.substring(with: span) == expectedSuffix { return caret.location }
+                    // Paragraph separators in AXValue do not share AXSelectedTextRange's offsets.
+                    var span = CFRange(location: caret.location - expectedSuffix.utf16.count, length: expectedSuffix.utf16.count)
+                    let status = AXUIElementCopyParameterizedAttributeValue(field, kAXStringForRangeParameterizedAttribute as CFString,
+                                                                          AXValueCreate(.cfRange, &span)!, &text)
+                    // Chromium has no range value while applying a host Backspace; wait for that edit.
+                    if status != .noValue {
+                        try check(status, "committed range")
+                        if text as? String == expectedSuffix { return caret.location }
+                    }
                 }
                 try Task.checkCancellation()
                 Thread.sleep(forTimeInterval: 0.005)

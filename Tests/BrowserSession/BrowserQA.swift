@@ -70,6 +70,8 @@ private struct BrowserQA {
                      "The selected Hannyeong source is not converting in this host; reconnect the input source before testing")
         print("PASS active input source: dkssud -> 안녕"); fflush(stdout)
         let cases: [Case] = [
+            Case(name: "reportedSentenceMiddle", actions: [.text("지금 처럼 이렇게 치다가 to go home 하면 ")], expected: "지금 처럼 이렇게 치다가 to go home 하면 "),
+            Case(name: "paragraphRewriteAndContinue", actions: [.text("안녕\n안녕\nto go home 안녕 ")], expected: "안녕\n안녕\nto go home 안녕 "),
             Case(name: "backfill", actions: [.text("to go home ")], expected: "to go home "),
             Case(name: "reportedRepeatedGo", actions: [.text("go go go home ")], expected: "go go go home "),
             Case(name: "mixedSuffix", actions: [.text("to go homedmf ")], expected: "to go home을 "),
