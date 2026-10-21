@@ -16,6 +16,13 @@ enum CommittedTextSelection {
         }
     }
     static var isTrusted: Bool { AXIsProcessTrusted() }
+    static func hostApplication(_ bundleID: String?) throws -> NSRunningApplication {
+        guard let bundleID,
+              let host = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else {
+            throw Failure.invalidTarget("input application is not running")
+        }
+        return host
+    }
     @MainActor static func requestAccess() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         if !AXIsProcessTrustedWithOptions(options) {
@@ -24,18 +31,12 @@ enum CommittedTextSelection {
     }
     @MainActor static func select(_ expected: String, hostBundleID: String?) async throws -> NSRange {
         guard isTrusted else { throw Failure.permissionRequired }
-        guard let front = NSWorkspace.shared.frontmostApplication, front.bundleIdentifier == hostBundleID else {
-            throw Failure.invalidTarget("focused application changed")
-        }
-        let pid = front.processIdentifier
+        let pid = try hostApplication(hostBundleID).processIdentifier
         return try await Task.detached(priority: .userInitiated) { try select(expected, processID: pid) }.value
     }
     @MainActor static func confirmedCaret(expectedSuffix: String, hostBundleID: String?) async throws -> Int {
         guard isTrusted else { throw Failure.permissionRequired }
-        guard let front = NSWorkspace.shared.frontmostApplication, front.bundleIdentifier == hostBundleID else {
-            throw Failure.invalidTarget("focused application changed")
-        }
-        let pid = front.processIdentifier
+        let pid = try hostApplication(hostBundleID).processIdentifier
         return try await Task.detached(priority: .userInitiated) {
             let app = AXUIElementCreateApplication(pid)
             var focused: CFTypeRef?

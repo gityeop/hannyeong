@@ -13,9 +13,9 @@ enum ReplayedInputEvent {
     private static var sequence = 0
     private static var pending: [Int: Pending] = [:]
 
-    static func forward(_ event: NSEvent) async throws {
-        guard CGPreflightPostEventAccess(), let original = CGEvent(keyboardEventSource: nil, virtualKey: event.keyCode, keyDown: true),
-              let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+    static func forward(_ event: NSEvent, hostBundleID: String?) async throws {
+        let pid = try CommittedTextSelection.hostApplication(hostBundleID).processIdentifier
+        guard CGPreflightPostEventAccess(), let original = CGEvent(keyboardEventSource: nil, virtualKey: event.keyCode, keyDown: true) else {
             throw CommittedTextSelection.Failure.invalidTarget("host event unavailable")
         }
         sequence += 1
@@ -34,10 +34,12 @@ enum ReplayedInputEvent {
 
     /// IMK reconstructs NSEvent without the original timestamp or CGEvent identifiers.
     /// Only one host command is forwarded at a time while subsequent events stay buffered.
-    static func consume(_ event: NSEvent) -> Bool {
+    static func consume(_ event: NSEvent, hostBundleID: String?) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift, .capsLock])
-        let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard let entry = pending.first(where: { $0.value.pid == pid && $0.value.code == event.keyCode && $0.value.modifiers == modifiers }) else { return false }
+        guard let entry = pending.first(where: {
+            NSRunningApplication(processIdentifier: $0.value.pid)?.bundleIdentifier == hostBundleID &&
+                $0.value.code == event.keyCode && $0.value.modifiers == modifiers
+        }) else { return false }
         guard event.type == .keyDown else { return false }
         pending.removeValue(forKey: entry.key)
         let command = entry.value

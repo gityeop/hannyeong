@@ -11,15 +11,14 @@ final class CommittedInputEvents: @unchecked Sendable {
     private var tap: CFMachPort?
     private var owner: String?
     private var processID: pid_t?
+    private var activationProcessID: pid_t?
     private var events: [CGEvent] = []
     private var releasing = false
     private var failed = false
     private static let flushMarker: Int64 = 0x48414E4E59454F4E
 
     @MainActor func pause(owner: String, hostBundleID: String) throws {
-        guard let front = NSWorkspace.shared.frontmostApplication, front.bundleIdentifier == hostBundleID else {
-            throw CommittedTextSelection.Failure.invalidTarget("input queue application changed")
-        }
+        let host = try CommittedTextSelection.hostApplication(hostBundleID)
         try start()
         lock.lock()
         defer { lock.unlock() }
@@ -28,7 +27,9 @@ final class CommittedInputEvents: @unchecked Sendable {
             throw CommittedTextSelection.Failure.invalidTarget("another committed edit owns the input queue")
         }
         self.owner = owner
-        processID = front.processIdentifier
+        processID = host.processIdentifier
+        // A non-activating panel receives keys while another app stays active.
+        activationProcessID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         releasing = false
     }
 
@@ -89,7 +90,7 @@ final class CommittedInputEvents: @unchecked Sendable {
         defer { lock.unlock() }
         if type == .keyUp, event.getIntegerValueField(.eventSourceUserData) == Self.flushMarker {
             guard releasing else { return nil }
-            if NSWorkspace.shared.frontmostApplication?.processIdentifier == processID {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == activationProcessID {
                 // Deliver one key-down, then wait for IMK to finish it before releasing
                 // the next. That key may start another asynchronous committed edit.
                 let count = events.firstIndex(where: { $0.type == .keyDown }).map { $0 + 1 } ?? events.count
@@ -124,7 +125,8 @@ final class CommittedInputEvents: @unchecked Sendable {
             return Unmanaged.passUnretained(event)
         }
         guard owner != nil,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == processID else {
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == activationProcessID,
+              event.getIntegerValueField(.eventTargetUnixProcessID) == processID.map(Int64.init) else {
             return Unmanaged.passUnretained(event)
         }
         events.append(event.copy()!)

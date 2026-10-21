@@ -76,7 +76,7 @@ final class InputController: IMKInputController {
             return true
         }
         defer { if event.type == .keyDown { session?.finishInputEvent() } }
-        if ReplayedInputEvent.consume(event) { return false }
+        if ReplayedInputEvent.consume(event, hostBundleID: (sender as? any IMKTextInput)?.bundleIdentifier()) { return false }
         if event.type == .leftMouseDown {
             rightCommand.cancel()
             closeFeedback()

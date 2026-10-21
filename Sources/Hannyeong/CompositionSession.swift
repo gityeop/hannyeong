@@ -138,10 +138,7 @@ final class CompositionSession {
             try await CommittedTextSelection.confirmedCaret(expectedSuffix: expected, hostBundleID: hostBundleID)
         }
         self.forwardHostEvent = forwardHostEvent ?? { event in
-            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == hostBundleID else {
-                throw CommittedTextSelection.Failure.invalidTarget("forwarded event application changed")
-            }
-            try await ReplayedInputEvent.forward(event)
+            try await ReplayedInputEvent.forward(event, hostBundleID: hostBundleID)
         }
         self.onPreviewStart = onPreviewStart
         self.onPreview = onPreview
