@@ -168,6 +168,16 @@ private struct InformationSettingsView: View {
                 }
                 .padding(.vertical, 8)
             }
+            SettingsCard {
+                HStack(spacing: 16) {
+                    Text("앞 단어 교정을 위한 손쉬운 사용 허용하기").font(.system(size: 16, weight: .semibold))
+                    Spacer()
+                    Button("손쉬운 사용 허용...") { CommittedTextSelection.requestAccess() }
+                        .buttonStyle(SettingsSmallButtonStyle())
+                        .accessibilityIdentifier("allow-committed-text-editing")
+                }
+            }
+            UpdateSettingsView(updates: .shared)
             Spacer(minLength: 0)
         }
     }

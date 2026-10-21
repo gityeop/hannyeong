@@ -30,3 +30,5 @@ scripts/*
 !scripts/build-pkg.sh
 !scripts/run.sh
 !scripts/test-local-session.sh
+!scripts/embed-sparkle.sh
+!scripts/build-update.sh

@@ -27,6 +27,18 @@ enum LocalModelService {
         return client
     }
 
+    private static var cachedFrequencies: WordFrequencies?
+
+    static func wordFrequencies() throws -> WordFrequencies {
+        if let cachedFrequencies { return cachedFrequencies }
+        guard let url = Bundle.main.url(forResource: "rule-lexicon", withExtension: "json") else {
+            throw LocalDecisionError(detail: "Word frequency lexicon is not installed")
+        }
+        let frequencies = try WordFrequencies.load(url)
+        cachedFrequencies = frequencies
+        return frequencies
+    }
+
     /// The personal correction file chosen for the bundled model, for the settings window.
     static func personalState() throws -> PersonalStateSelection {
         _ = try client()

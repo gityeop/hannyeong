@@ -3,7 +3,7 @@ import InputMethodKit
 import HannyeongCore
 import os
 
-/// Raw keys stay available until a word is decided, including keys typed during inference.
+/// Raw keys stay available until a word is decided and committed in its boundary event.
 @MainActor
 final class CompositionSession {
     /// How the committed text for a word was chosen.
@@ -41,6 +41,40 @@ final class CompositionSession {
         let recorded: CorrectionExample?
     }
 
+    private enum Language { case english, korean }
+
+    /// A word's reading with the probability of every candidate reading.
+    private struct Decided: Sendable {
+        let text: String
+        let probabilities: [String: Double]
+        var confidence: Double { probabilities[text]! }
+    }
+
+    /// Already committed words that can be reconsidered after an unsure Korean/English choice.
+    /// `decided` follows the model word by word; `other` starts from the other reading of the first word.
+    /// A later confident word (the anchor) picks `other` when it agrees with it; see scripts/backfill-sim.py.
+    private struct Reconsideration {
+        let before: String
+        var words: [Word]
+        var decided: [String]
+        var other: [String]
+        var range: NSRange
+        var text: String { zip(decided, words).map { $0 + $1.separator }.joined() }
+        /// A sentence-initial single word waits for a second anchor in this language.
+        var confirming: Language? = nil
+    }
+
+    /// Thresholds measured by scripts/backfill-sim.py (2026-10-20).
+    private enum Backfill {
+        static let hold = 0.9
+        static let anchor = 0.95
+        static let floor = 0.05
+        static let window = 4
+        /// Keep both interpretations when both readings are at least this common (Zipf).
+        static let englishZipf = 5.5
+        static let koreanZipf = 5.0
+    }
+
     private struct Feedback {
         let conversionID: UUID
         let raw: String
@@ -55,6 +89,7 @@ final class CompositionSession {
     private let client: any IMKTextInput
     private let corrections: CorrectionStore
     private let localClient: LocalDecisionClient?
+    private let wordFrequencies: WordFrequencies?
     private let previewDefaults: UserDefaults
     private let hostBundleID: String?
     private let onPreviewStart: (() -> Void)?
@@ -64,27 +99,50 @@ final class CompositionSession {
     private let diagnosticLogger = Logger(subsystem: "com.yeop.inputmethod.Hannyeong", category: "CommandDiagnostics")
     let diagnosticID = UUID().uuidString
     private var words: [Word] = []
+    private var reconsideration: Reconsideration?
     private var raw = ""
+    private let selectCommittedText: (String) async throws -> NSRange
+    private let confirmCommittedText: (String) async throws -> Int
+    private let forwardHostEvent: (NSEvent) async throws -> Void
+    private var rewriteTask: Task<Void, Never>?
+    private var bufferedEvents: [NSEvent] = []
+    private var drainingEvents = false
+    var hasPendingRewrite: Bool { rewriteTask != nil || drainingEvents }
     private var context = ""
     private var contextSelection: NSRange?
-    private var task: Task<Void, Never>?
     private var learning: Task<Void, Never>?
-    private var generation = 0
     private var active = true
     private var lastCommit: Conversion?
     private var feedback: Feedback?
 
     init(client: any IMKTextInput, corrections: CorrectionStore? = nil,
-         localClient: LocalDecisionClient? = nil, previewDefaults: UserDefaults = .standard,
+         localClient: LocalDecisionClient? = nil, wordFrequencies: WordFrequencies? = nil,
+         previewDefaults: UserDefaults = .standard,
          hostBundleID: String? = nil,
+         selectCommittedText: ((String) async throws -> NSRange)? = nil,
+         confirmCommittedText: ((String) async throws -> Int)? = nil,
+         forwardHostEvent: ((NSEvent) async throws -> Void)? = nil,
          onPreviewStart: (() -> Void)? = nil,
          onPreview: ((String?) -> Void)? = nil,
          onError: @escaping (String) -> Void) {
         self.client = client
         self.corrections = corrections ?? CorrectionStore.shared
         self.localClient = localClient
+        self.wordFrequencies = wordFrequencies
         self.previewDefaults = previewDefaults
         self.hostBundleID = hostBundleID
+        self.selectCommittedText = selectCommittedText ?? { expected in
+            try await CommittedTextSelection.select(expected, hostBundleID: hostBundleID)
+        }
+        self.confirmCommittedText = confirmCommittedText ?? { expected in
+            try await CommittedTextSelection.confirmedCaret(expectedSuffix: expected, hostBundleID: hostBundleID)
+        }
+        self.forwardHostEvent = forwardHostEvent ?? { event in
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == hostBundleID else {
+                throw CommittedTextSelection.Failure.invalidTarget("forwarded event application changed")
+            }
+            try await ReplayedInputEvent.forward(event)
+        }
         self.onPreviewStart = onPreviewStart
         self.onPreview = onPreview
         self.onError = onError
@@ -92,20 +150,44 @@ final class CompositionSession {
     }
 
     func handle(_ event: NSEvent) -> Bool {
-        if event.modifierFlags.intersection([.command, .control]).isEmpty == false {
+        if hasPendingRewrite {
+            bufferedEvents.append(event)
+            return true
+        }
+        return handleNow(event)
+    }
+
+    func finishInputEvent() {
+        if !hasPendingRewrite { CommittedInputEvents.shared.release(owner: diagnosticID) }
+    }
+
+    private func handleNow(_ event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection([.command, .control]).isEmpty == false,
+           !(123...126).contains(event.keyCode) {
             commitHangul()
             return false
         }
         switch event.keyCode {
         case 53: // Escape explicitly chooses the original keys.
+            reconsideration = nil
             if !raw.isEmpty || !words.isEmpty { commitRaw(); return true }
             return false
         case 51:
             if event.modifierFlags.contains(.option) { return deleteWord() }
-            return backspace()
+            let handled = backspace()
+            if !handled, reconsideration != nil, !drainingEvents {
+                // Chromium applies a host deletion after IMK returns. Keep following keys queued
+                // until the shortened committed span is visible at the actual caret.
+                confirmRecentCommit()
+            }
+            return handled
         case 36, 76:
             do {
                 try commitForReturn()
+                if rewriteTask != nil {
+                    bufferedEvents.append(event)
+                    return true
+                }
                 lastCommit = nil
                 feedback = nil
                 trackHostInsertion("\n")
@@ -119,7 +201,7 @@ final class CompositionSession {
             commitHangul()
             return false
         case 123...126: // Navigation belongs to the host after ending the current composition.
-            commitHangul()
+            commitPending()
             return false
         default: break
         }
@@ -127,7 +209,10 @@ final class CompositionSession {
         if characters.unicodeScalars.allSatisfy({ (65...90).contains($0.value) || (97...122).contains($0.value) }) {
             if raw.isEmpty && words.isEmpty {
                 // Own commits already contain the context, even when the host cannot return it.
-                if contextSelection != client.selectedRange() { context = precedingText() }
+                if contextSelection != client.selectedRange() {
+                    if let recent = reconsideration, !recentMatchesCaret(recent) { reconsideration = nil }
+                    context = precedingText()
+                }
                 lastCommit = nil
             }
             feedback = nil
@@ -160,6 +245,7 @@ final class CompositionSession {
     }
 
     func suspend() {
+        CommittedInputEvents.shared.cancel(owner: diagnosticID)
         commitPending()
         onPreview?(nil)
         active = false
@@ -168,7 +254,9 @@ final class CompositionSession {
     }
 
     func deactivate() {
+        CommittedInputEvents.shared.cancel(owner: diagnosticID)
         commitPending()
+        reconsideration = nil
         onPreview?(nil)
         active = false
         lastCommit = nil
@@ -179,8 +267,8 @@ final class CompositionSession {
     func commitRaw() {
         logDiagnostic("commit_raw_before_clear")
         let text = rawText
-        cancelRequest()
         words.removeAll()
+        reconsideration = nil
         raw = ""
         onPreview?(nil)
         if !text.isEmpty {
@@ -195,8 +283,8 @@ final class CompositionSession {
         if lastCommit != nil || !rawText.isEmpty { logDiagnostic("commit_hangul_before_clear") }
         do {
             let text = try previewText()
-            cancelRequest()
             words.removeAll()
+            reconsideration = nil
             raw = ""
             onPreview?(nil)
             if !text.isEmpty {
@@ -305,23 +393,25 @@ final class CompositionSession {
     }
 
     private func finishPendingForShortcut(preservePreview: Bool) throws {
+        defer { reconsideration = nil }
         guard !rawText.isEmpty else { return }
-        cancelRequest()
         // Earlier queued words retain their model decisions even during rapid typing.
-        while let word = words.first {
-            let before = context
-            let selected = try ReturnDecision.resolve(decision(for: word.raw, before: before))
-            try commitFirstWord(selected, before: before)
-        }
+        try decideQueuedWords()
         if !raw.isEmpty {
             let keys = raw
             words.append(Word(raw: keys, separator: ""))
             raw = ""
             render()
-            let before = context
             let selected = try preservePreview ? preview(keys) :
-                ReturnDecision.resolve(decision(for: keys, before: before))
-            try commitFirstWord(selected, before: before, source: preservePreview ? .inlinePreview : .automaticOrMemory)
+                ReturnDecision.resolve(decision(for: keys, before: context)).text
+            try commitWords([selected], source: preservePreview ? .inlinePreview : .automaticOrMemory)
+        }
+    }
+
+    /// Decides and commits every queued word in order.
+    private func decideQueuedWords() throws {
+        while rewriteTask == nil, let next = try nextRequests() {
+            try advance(next.requests.map { try ReturnDecision.resolve($0) })
         }
     }
 
@@ -337,7 +427,7 @@ final class CompositionSession {
     }
 
     private func previewText() throws -> String {
-        try words.map { word in
+        return try words.map { word in
             (word.raw.isEmpty ? "" : try preview(word.raw)) + word.separator
         }.joined() + (raw.isEmpty ? "" : try preview(raw))
     }
@@ -361,6 +451,8 @@ final class CompositionSession {
 
     private func boundary(_ separator: String) -> Bool {
         guard !raw.isEmpty || !words.isEmpty else { return false }
+        do { try pauseInput() }
+        catch { report(error); return true }
         feedback = nil
         if raw.isEmpty {
             words[words.count - 1].separator += separator
@@ -368,30 +460,25 @@ final class CompositionSession {
             words.append(Word(raw: raw, separator: separator))
             raw = ""
         }
-        render()
         beginRequest()
         return true
     }
 
     private func commitForReturn() throws {
-        cancelRequest()
         if !raw.isEmpty {
             words.append(Word(raw: raw, separator: ""))
             raw = ""
             render()
         }
-        while let word = words.first {
-            let before = context
-            let select = try decision(for: word.raw, before: before)
-            let selected = try ReturnDecision.resolve(select)
-            try commitFirstWord(selected, before: before)
-        }
+        try decideQueuedWords()
+        reconsideration = nil
     }
 
     private func appendToLastConversion(_ suffix: String) -> Bool {
         guard var commit = lastCommit else { return false }
         guard commit.range.location != NSNotFound,
               client.selectedRange() == NSRange(location: commit.range.location + commit.range.length, length: 0) else {
+            reconsideration = nil
             lastCommit = nil
             return false
         }
@@ -399,6 +486,13 @@ final class CompositionSession {
         commit.separator += suffix
         commit.range.length += suffix.utf16.count
         lastCommit = commit
+        if Self.spaces(suffix), var recent = reconsideration {
+            recent.words[recent.words.count - 1].separator += suffix
+            recent.range.length += suffix.utf16.count
+            reconsideration = recent
+        } else {
+            reconsideration = nil
+        }
         context = String((commit.before + commit.text).suffix(120))
         contextSelection = client.selectedRange()
         feedback = nil
@@ -406,6 +500,7 @@ final class CompositionSession {
     }
 
     private func trackHostInsertion(_ text: String) {
+        reconsideration = nil
         let caret = client.selectedRange()
         if contextSelection == caret, caret.length == 0, caret.location != NSNotFound {
             context = String((context + text).suffix(120))
@@ -426,7 +521,6 @@ final class CompositionSession {
                 render()
                 return true
             }
-            cancelRequest()
             words.removeLast()
             raw = word.raw
             raw.removeLast()
@@ -434,12 +528,26 @@ final class CompositionSession {
             beginRequest()
             return true
         }
-        if contextSelection == client.selectedRange(), let last = context.last {
-            context.removeLast()
-            let caret = client.selectedRange()
-            contextSelection = NSRange(location: max(0, caret.location - String(last).utf16.count), length: 0)
+        if var recent = reconsideration, var commit = lastCommit,
+           recent.words.last?.separator.last == " ", commit.separator.last == " ",
+           recentMatchesCaret(recent) {
+            recent.words[recent.words.count - 1].separator.removeLast()
+            recent.range.length -= 1
+            commit.separator.removeLast()
+            commit.range.length -= 1
+            reconsideration = recent
+            lastCommit = commit
+            context = String((commit.before + commit.text).suffix(120))
+            contextSelection = NSRange(location: NSMaxRange(recent.range), length: 0)
+        } else {
+            reconsideration = nil
+            lastCommit = nil
+            if contextSelection == client.selectedRange(), let last = context.last {
+                context.removeLast()
+                let caret = client.selectedRange()
+                contextSelection = NSRange(location: max(0, caret.location - String(last).utf16.count), length: 0)
+            }
         }
-        lastCommit = nil
         feedback = nil
         return false
     }
@@ -452,8 +560,10 @@ final class CompositionSession {
             render()
             return true
         }
-        guard !words.isEmpty else { return false }
-        cancelRequest()
+        guard !words.isEmpty else {
+            reconsideration = nil
+            return false
+        }
         while let word = words.popLast() {
             if !word.raw.isEmpty { break }
         }
@@ -463,7 +573,7 @@ final class CompositionSession {
     }
 
     var feedbackAvailable: Bool {
-        active && words.isEmpty && raw.isEmpty && lastCommit != nil
+        active && !hasPendingRewrite && words.isEmpty && raw.isEmpty && lastCommit != nil
     }
 
     func prepareFeedback() throws -> [Candidate] {
@@ -503,8 +613,8 @@ final class CompositionSession {
         try corrections.record(raw: target.raw, before: target.before, rejected: target.rejected,
                                preferred: preferred, scope: scope)
         let text = preferred + target.separator
-        cancelRequest()
         words.removeAll()
+        reconsideration = nil
         raw = ""
         onPreview?(nil)
         client.insertText(text, replacementRange: target.range)
@@ -543,32 +653,14 @@ final class CompositionSession {
     }
 
     private func beginRequest() {
-        guard active, task == nil, !words.isEmpty else { return }
-        let epoch = generation
-        task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            while self.active, self.generation == epoch, let word = self.words.first {
-                do {
-                    let before = self.context
-                    let select = try self.decision(for: word.raw, before: before)
-                    let selected = try await select()
-                    guard self.active, self.generation == epoch, self.words.first?.id == word.id else { return }
-                    try self.commitFirstWord(selected, before: before)
-                    let englishPrefixLength = selected.prefix(while: { $0.isASCII }).count
-                    self.logger.info("Word decided locally; keys=\(word.raw.count) context=\(before.count) English-prefix=\(englishPrefixLength)")
-                } catch {
-                    guard self.active, self.generation == epoch else { return }
-                    self.report(error)
-                    self.task = nil
-                    return
-                }
-            }
-            if self.generation == epoch { self.task = nil }
-        }
+        guard active else { return }
+        // Finish IMK updates before the host delivers the next key, as on Return.
+        do { try decideQueuedWords() }
+        catch { report(error) }
     }
 
-    private func decision(for raw: String, before: String) throws -> (@Sendable () async throws -> String) {
-        guard !raw.isEmpty else { return { "" } }
+    private func decision(for raw: String, before: String) throws -> (@Sendable () async throws -> Decided) {
+        guard !raw.isEmpty else { return { Decided(text: "", probabilities: ["": 1]) } }
         let candidates = try CandidateBuilder.candidates(for: raw, includeSplits: true)
         let memory = try corrections.load()
         if let preferred = memory.preferred(raw: raw, before: before) {
@@ -576,51 +668,256 @@ final class CompositionSession {
             guard rememberedCandidates.contains(where: { $0.text == preferred }) else {
                 throw SessionError("The saved correction is not a valid candidate.")
             }
-            return { preferred }
+            return { Decided(text: preferred, probabilities: [preferred: 1]) }
         }
         let local = try localClient ?? LocalModelService.client()
-        return { try await local.decide(raw: raw, before: before, candidates: candidates).predicted }
+        return {
+            let result = try await local.decide(raw: raw, before: before, candidates: candidates)
+            return Decided(text: result.predicted, probabilities: Dictionary(uniqueKeysWithValues:
+                candidates.map { ($0.text, result.probabilities[$0.id]!) }))
+        }
     }
 
-    private func commitFirstWord(_ selected: String, before: String,
-                                 source: SelectionSource = .automaticOrMemory) throws {
-        let range = client.markedRange()
-        guard range.location != NSNotFound else {
-            logDiagnostic("commit_marked_range_missing")
-            throw SessionError("The host lost the marked composition before commitment.")
+    private var nextWord: Word? { words.first }
+
+    /// The decisions the next word needs: one, or one per interpretation of the recent commits.
+    private func nextRequests() throws -> (word: Word, requests: [@Sendable () async throws -> Decided])? {
+        guard let word = nextWord else { return nil }
+        guard let recent = reconsideration else { return (word, [try decision(for: word.raw, before: context)]) }
+        return (word, try [recent.decided, recent.other].map { chain in
+            try decision(for: word.raw, before: String((recent.before + zip(chain, recent.words).map { $0 + $1.separator }.joined()).suffix(120)))
+        })
+    }
+
+    /// Commits each word immediately; only internal records wait for a confident following word.
+    private func advance(_ results: [Decided]) throws {
+        guard let previous = reconsideration else {
+            let word = words[0], result = results[0]
+            let other = try otherReading(of: result, for: word), before = context
+            try commitWords([result.text])
+            guard active else { return }
+            if let other, let commit = lastCommit {
+                reconsideration = Reconsideration(before: before, words: [word], decided: [result.text],
+                                                   other: [other], range: commit.range)
+            }
+            return
         }
-        let word = words.removeFirst()
-        let text = selected + word.separator
-        // One host update commits the word and separator together, including during fast typing.
+        var recent = previous
+        let word = words[0]
+        let (decided, other) = (results[0], results[1])
+        let anchor = decided.text == other.text && min(decided.confidence, other.confidence) >= Backfill.anchor
+            ? try anchorLanguage(of: decided.text, raw: word.raw) : nil
+        recent.words.append(word)
+        recent.decided.append(decided.text)
+        recent.other.append(other.text)
+        var keep = false
+        var replace = false
+        if let confirming = recent.confirming {
+            replace = anchor == confirming
+        } else if let anchor {
+            let waiting = Array(zip(previous.other, previous.words))
+            let agrees = try waiting.allSatisfy { text, word in
+                try language(of: text, raw: word.raw) == anchor && text.allSatisfy(Self.readable)
+            }
+            let left = leftLanguage(in: previous.before)
+            if agrees, left == nil, waiting.count == 1, Self.spaces(word.separator) {
+                recent.confirming = anchor
+                keep = true
+            } else {
+                replace = agrees && (left == anchor || waiting.count >= 2)
+            }
+        } else {
+            keep = Self.spaces(word.separator) && recent.decided.count < Backfill.window
+        }
+        try commitWords(replace ? recent.other : [decided.text], replacing: replace ? previous : nil)
+        reconsideration = nil
+        if keep, let commit = lastCommit {
+            let length = recent.text.utf16.count, end = commit.range.location + commit.range.length
+            if end >= length {
+                recent.range = NSRange(location: end - length, length: length)
+                reconsideration = recent
+            }
+        }
+    }
+
+    /// The other pure-language reading when the model was unsure between it and its choice,
+    /// or when both readings are common words (so/내, go/해).
+    private func otherReading(of result: Decided, for word: Word) throws -> String? {
+        guard Self.spaces(word.separator), let language = try language(of: result.text, raw: word.raw) else { return nil }
+        let korean = try HangulComposer.compose(word.raw)
+        let other = language == .english ? korean : word.raw
+        guard other != result.text, let probability = result.probabilities[other] else { return nil }
+        if result.confidence < Backfill.hold, probability >= Backfill.floor { return other }
+        let frequencies = try wordFrequencies ?? LocalModelService.wordFrequencies()
+        return (frequencies.english[word.raw.lowercased()] ?? 0) >= Backfill.englishZipf &&
+            (frequencies.korean[korean] ?? 0) >= Backfill.koreanZipf ? other : nil
+    }
+
+    private func language(of text: String, raw: String) throws -> Language? {
+        text == raw ? .english : text == (try HangulComposer.compose(raw)) ? .korean : nil
+    }
+
+    /// Mixed candidates have an English prefix; home을 provides English evidence for preceding words.
+    private func anchorLanguage(of text: String, raw: String) throws -> Language? {
+        if let first = text.first, first.isASCII, first.isLetter { return .english }
+        return try language(of: text, raw: raw)
+    }
+
+    private func recentMatchesCaret(_ recent: Reconsideration) -> Bool {
+        guard client.selectedRange() == NSRange(location: recent.range.location + recent.range.length, length: 0) else {
+            return false
+        }
+        var actual = NSRange(location: NSNotFound, length: 0)
+        return client.string(from: recent.range, actualRange: &actual) == recent.text && actual == recent.range
+    }
+
+    /// Language of the committed word right before the caret when only spaces follow it.
+    private func leftLanguage(in text: String) -> Language? {
+        let word = text.reversed().drop(while: { $0 == " " })
+            .prefix(while: { $0.isASCII ? $0.isLetter : Self.hangul($0) }).reversed()
+        guard !word.isEmpty else { return nil }
+        return word.contains(where: { !$0.isASCII }) ? .korean : .english
+    }
+
+    private static func spaces(_ separator: String) -> Bool { separator.allSatisfy { $0 == " " } }
+
+    private static func hangul(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { (0xAC00...0xD7A3).contains($0.value) || (0x3131...0x3163).contains($0.value) }
+    }
+
+    /// Korean readings switched in by an anchor must be syllables or emoticon jamo, not jamo runs like ㅞㅡ.
+    private static func readable(_ character: Character) -> Bool {
+        character.isASCII || "ㅋㅎㅠㅜㅡ".contains(character) ||
+            character.unicodeScalars.allSatisfy { (0xAC00...0xD7A3).contains($0.value) }
+    }
+
+    /// Commits queued words and any revised preceding words; right Command targets the last word.
+    private func commitWords(_ selected: [String], source: SelectionSource = .automaticOrMemory,
+                             replacing recent: Reconsideration? = nil) throws {
+        if let recent {
+            try pauseInput()
+            let count = recent.words.count
+            let current = Array(selected.dropFirst(count))
+            let currentWords = Array(words.prefix(current.count))
+            let committedText = zip(current, currentWords).map { $0 + $1.separator }.joined()
+            let allWords = recent.words + currentWords
+            let replacement = zip(selected, allWords).map { $0 + $1.separator }.joined()
+            let expected = recent.text + committedText
+            try commitWords(current, source: source)
+            guard let anchor = lastCommit else { throw SessionError("The anchor has no committed edit target.") }
+            rewriteTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let target = try await self.selectCommittedText(expected)
+                    guard self.active else { throw SessionError("Input session changed during committed edit.") }
+                    self.client.insertText(replacement, replacementRange: NSRange(location: NSNotFound, length: 0))
+                    self.context = String((recent.before + replacement).suffix(120))
+                    self.contextSelection = NSRange(location: target.location + replacement.utf16.count, length: 0)
+                    let last = currentWords.last!
+                    self.lastCommit = Conversion(id: anchor.id, raw: last.raw, selected: current.last!, separator: last.separator,
+                        before: String((recent.before + zip(selected.dropLast(), allWords.dropLast()).map { $0 + $1.separator }.joined()).suffix(120)),
+                        range: NSRange(location: target.location + replacement.utf16.count - anchor.text.utf16.count, length: anchor.text.utf16.count), source: source)
+                    let confirmedEnd = try await self.confirmCommittedText(self.lastCommit!.text)
+                    guard confirmedEnd == target.location + replacement.utf16.count else {
+                        throw SessionError("Committed rewrite ended at a different position.")
+                    }
+                    self.contextSelection = self.client.selectedRange()
+                    AppSupport.shared.clearError()
+                } catch { self.report(error) }
+                self.rewriteTask = nil
+                await self.drainBufferedEvents()
+            }
+            return
+        }
+        let range = NSRange(location: NSNotFound, length: 0)
+        let count = selected.count
+        let committed = Array(words.prefix(count))
+        let preceding = context
+        let texts = zip(selected, committed).map { $0 + $1.separator }
+        let text = texts.joined(), last = texts[texts.count - 1], word = committed[committed.count - 1]
+        // Popup and IMK calls can synchronously suspend this session. Consume the
+        // queued words first so suspension cannot commit or remove them a second time.
+        words.removeFirst(count)
+        onPreview?(nil)
         client.insertText(text, replacementRange: range)
-        context = String((context + text).suffix(120))
+        let before = String((preceding + texts.dropLast().joined()).suffix(120))
+        context = String((preceding + text).suffix(120))
         let selection = client.selectedRange()
         contextSelection = selection
-        // Commitment has already succeeded. Hosts without a document insertion point
-        // cannot provide a safe target for subsequent edits; do not retain a stale target.
+        // Keep the conversion identity; AX confirms coordinates before a retained history is reused.
         lastCommit = nil
         feedback = nil
         if selection.location != NSNotFound, selection.length == 0,
-           selection.location >= text.utf16.count {
+           selection.location >= last.utf16.count {
             // The host may rebase its text storage while ending marked composition.
             // Track the inserted text in the post-commit coordinate space used by selectedRange/string(from:).
-            let committedRange = NSRange(location: selection.location - text.utf16.count, length: text.utf16.count)
-            if committedRange != NSRange(location: range.location, length: text.utf16.count) {
-                diagnosticLogger.notice("Commit coordinates changed; session=\(self.diagnosticID, privacy: .public) markedBefore=\(NSStringFromRange(range), privacy: .public) selectionAfter=\(NSStringFromRange(selection), privacy: .public) committedRange=\(NSStringFromRange(committedRange), privacy: .public)")
-            }
-            lastCommit = Conversion(id: word.id, raw: word.raw, selected: selected, separator: word.separator, before: before,
-                                    range: committedRange, source: source)
+            let committedRange = NSRange(location: selection.location - last.utf16.count, length: last.utf16.count)
+            lastCommit = Conversion(id: word.id, raw: word.raw, selected: selected[selected.count - 1], separator: word.separator,
+                                    before: before, range: committedRange, source: source)
         } else {
+            lastCommit = Conversion(id: word.id, raw: word.raw, selected: selected.last!, separator: word.separator,
+                before: before, range: NSRange(location: NSNotFound, length: 0), source: source)
             logDiagnostic("commit_complete_without_edit_target")
         }
         if !rawText.isEmpty { render() }
         AppSupport.shared.clearError()
     }
 
-    private func cancelRequest() {
-        generation += 1
-        task?.cancel()
-        task = nil
+    private func confirmRecentCommit() {
+        guard let commit = lastCommit else { return }
+        do { try pauseInput() }
+        catch {
+            reconsideration = nil
+            report(error)
+            CommittedInputEvents.shared.cancel(owner: diagnosticID)
+            return
+        }
+        let expected = commit.text
+        rewriteTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let end = try await self.confirmCommittedText(expected)
+                self.lastCommit?.range = NSRange(location: end - commit.text.utf16.count, length: commit.text.utf16.count)
+                if let recent = self.reconsideration {
+                    self.reconsideration?.range = NSRange(location: end - recent.text.utf16.count, length: recent.text.utf16.count)
+                }
+                self.contextSelection = self.client.selectedRange()
+            } catch {
+                self.reconsideration = nil
+                self.report(error)
+            }
+            self.rewriteTask = nil
+            await self.drainBufferedEvents()
+        }
+    }
+
+    private func drainBufferedEvents() async {
+        drainingEvents = true
+        defer {
+            drainingEvents = false
+            if rewriteTask == nil, bufferedEvents.isEmpty {
+                CommittedInputEvents.shared.release(owner: diagnosticID)
+            }
+        }
+        guard active else { bufferedEvents.removeAll(); return }
+        while rewriteTask == nil, !bufferedEvents.isEmpty {
+            let event = bufferedEvents.removeFirst()
+            if !handleNow(event) {
+                do {
+                    try await forwardHostEvent(event)
+                    if event.keyCode == 51, reconsideration != nil {
+                        confirmRecentCommit()
+                        return
+                    }
+                }
+                catch { report(error); return }
+            }
+        }
+    }
+
+    private func pauseInput() throws {
+        guard let hostBundleID, CommittedTextSelection.isTrusted else { return }
+        try CommittedInputEvents.shared.pause(owner: diagnosticID, hostBundleID: hostBundleID)
     }
 
     private func precedingText() -> String {
@@ -641,14 +938,21 @@ final class CompositionSession {
         // Log status/type without sending private typed text or response bodies to diagnostics.
         let failure = error as NSError
         logger.error("Decision failed: \(failure.domain, privacy: .public) code \(failure.code)")
-        onError("판별하지 못했습니다. Space로 다시 시도하거나 Esc로 원문을 확정하세요.")
+        if let failure = error as? CommittedTextSelection.Failure {
+            diagnosticLogger.error("Committed selection failed: \(failure.localizedDescription, privacy: .public)")
+        }
+        if case CommittedTextSelection.Failure.permissionRequired = error {
+            onError(error.localizedDescription)
+        } else {
+            onError("판별하지 못했습니다. Space로 다시 시도하거나 Esc로 원문을 확정하세요.")
+        }
     }
 
     // Metadata only: never include raw input, converted text, context, or correction candidates.
     func logDiagnostic(_ stage: String) {
         let selection = client.selectedRange()
         let marked = client.markedRange()
-        diagnosticLogger.notice("Session state; session=\(self.diagnosticID, privacy: .public) stage=\(stage, privacy: .public) active=\(self.active) queued=\(self.words.count) rawUTF16=\(self.raw.utf16.count) task=\(self.task != nil) generation=\(self.generation) recent=\(self.lastCommit != nil) selection=\(NSStringFromRange(selection), privacy: .public) marked=\(NSStringFromRange(marked), privacy: .public) recentRange=\(String(describing: self.lastCommit?.range), privacy: .public)")
+        diagnosticLogger.notice("Session state; session=\(self.diagnosticID, privacy: .public) stage=\(stage, privacy: .public) active=\(self.active) queued=\(self.words.count) rawUTF16=\(self.raw.utf16.count) recent=\(self.lastCommit != nil) selection=\(NSStringFromRange(selection), privacy: .public) marked=\(NSStringFromRange(marked), privacy: .public) recentRange=\(String(describing: self.lastCommit?.range), privacy: .public)")
     }
 
     func logFailure(_ error: Error, stage: String) {
@@ -663,11 +967,11 @@ final class CompositionSession {
     }
 }
 
-private final class ReturnDecision: @unchecked Sendable {
+private final class ReturnDecision<Value: Sendable>: @unchecked Sendable {
     private let ready = DispatchSemaphore(value: 0)
-    private var result: Result<String, Error>?
+    private var result: Result<Value, Error>?
 
-    static func resolve(_ select: @escaping @Sendable () async throws -> String) throws -> String {
+    static func resolve(_ select: @escaping @Sendable () async throws -> Value) throws -> Value {
         let completion = ReturnDecision()
         // IMK's synchronous event handler must finish commitment before returning false.
         Task.detached(priority: .userInitiated) {

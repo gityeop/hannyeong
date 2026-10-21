@@ -1,6 +1,9 @@
 import AppKit
 import HannyeongCore
 
+/// The app reads rule-lexicon.json from its bundle; harnesses run from the repository root.
+private let ruleLexicon = try! WordFrequencies.load(URL(fileURLWithPath: ".build/dependencies/rule-lexicon.json"))
+
 @main
 private struct RightCommandQA {
     @MainActor static func main() {
@@ -84,7 +87,25 @@ private struct RightCommandQA {
         view.string = "😀 앞말 "
         view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
         let errors = NSMutableArray()
-        let session = CompositionSession(client: view, corrections: store, localClient: local) { errors.add($0) }
+        let session = CompositionSession(client: view, corrections: store, localClient: local, wordFrequencies: ruleLexicon,
+                                     selectCommittedText: { [view] expected in
+                                         let end = view.selectedRange().location
+                                         guard end >= expected.utf16.count else {
+                                             throw LocalDecisionError(detail: "Native committed caret is before target")
+                                         }
+                                         let range = NSRange(location: end - expected.utf16.count, length: expected.utf16.count)
+                                         guard view.selectCommittedText(in: range, expected: expected) else {
+                                             throw LocalDecisionError(detail: "Native committed selection text changed")
+                                         }
+                                         return range
+                                     }, confirmCommittedText: { [view] expected in
+                                         let end = view.selectedRange().location
+                                         guard end >= expected.utf16.count,
+                                               (view.string as NSString).substring(with: NSRange(location: end - expected.utf16.count, length: expected.utf16.count)) == expected else {
+                                             throw LocalDecisionError(detail: "Native commit suffix differs")
+                                         }
+                                         return end
+                                     }, forwardHostEvent: { [view] event in view.applyHostEvent(event) }) { errors.add($0) }
         func type(_ text: String) {
             for char in text { _ = session.handle(event(.keyDown, 0, text: String(char))) }
         }
@@ -98,13 +119,13 @@ private struct RightCommandQA {
         try require(view.string == "😀 앞말 dkssud  ", "Reversal changed the prefix or trailing spaces")
         session.toggleLanguage()
         type("hello ")
-        try await wait(view, errors)
+        try await wait(view, errors, session)
         try require(view.string == "😀 앞말 안녕  hello ", "English decision changed")
         session.toggleLanguage()
         try require(view.string == "😀 앞말 안녕  ㅗ디ㅣㅐ ", "English did not reverse to Hangul")
         session.toggleLanguage()
         type("slackdptj ")
-        try await wait(view, errors)
+        try await wait(view, errors, session)
         let mixed = view.string
         try require(mixed == "😀 앞말 안녕  hello slack에서 ", "Mixed word did not retain its saved correction")
         session.toggleLanguage()
@@ -151,7 +172,25 @@ private struct RightCommandQA {
         view.string = "앞말 "
         view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
         let errors = NSMutableArray()
-        let session = CompositionSession(client: view, corrections: store, localClient: local) { errors.add($0) }
+        let session = CompositionSession(client: view, corrections: store, localClient: local, wordFrequencies: ruleLexicon,
+                                     selectCommittedText: { [view] expected in
+                                         let end = view.selectedRange().location
+                                         guard end >= expected.utf16.count else {
+                                             throw LocalDecisionError(detail: "Native committed caret is before target")
+                                         }
+                                         let range = NSRange(location: end - expected.utf16.count, length: expected.utf16.count)
+                                         guard view.selectCommittedText(in: range, expected: expected) else {
+                                             throw LocalDecisionError(detail: "Native committed selection text changed")
+                                         }
+                                         return range
+                                     }, confirmCommittedText: { [view] expected in
+                                         let end = view.selectedRange().location
+                                         guard end >= expected.utf16.count,
+                                               (view.string as NSString).substring(with: NSRange(location: end - expected.utf16.count, length: expected.utf16.count)) == expected else {
+                                             throw LocalDecisionError(detail: "Native commit suffix differs")
+                                         }
+                                         return end
+                                     }, forwardHostEvent: { [view] event in view.applyHostEvent(event) }) { errors.add($0) }
         func type(_ text: String) {
             for char in text { _ = session.handle(event(.keyDown, 0, text: String(char))) }
         }
@@ -174,7 +213,7 @@ private struct RightCommandQA {
         try require(try personalOutputs().isEmpty, "Even taps left a personal model correction")
         session.toggleLanguage()
         type(" 1 rkskek ")
-        try await wait(view, errors)
+        try await wait(view, errors, session)
         try require(view.string == "앞말 rkskek 1 rkskek ", "Remembered word was not typed as chosen: \(view.string)")
         await session.finishLearning()
         try require(try personalOutputs() == ["rkskek"], "Third tap did not reach the personal model")
@@ -196,10 +235,10 @@ private struct RightCommandQA {
         }
     }
 
-    @MainActor private static func wait(_ view: NativeTextView, _ errors: NSMutableArray) async throws {
+    @MainActor private static func wait(_ view: NativeTextView, _ errors: NSMutableArray, _ session: CompositionSession) async throws {
         for _ in 0..<100 {
             try require(errors.count == 0, "Unexpected error: \(errors)")
-            if !view.hasMarkedText() { return }
+            if !view.hasMarkedText() && !session.hasPendingRewrite { return }
             try await Task.sleep(for: .milliseconds(10))
         }
         throw LocalDecisionError(detail: "Space commitment did not finish")

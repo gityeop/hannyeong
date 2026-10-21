@@ -93,6 +93,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         AppSupport.shared.prepareLaunch(arguments: CommandLine.arguments)
+        AppUpdater.shared.start()
         Logger(subsystem: bundleID, category: "Lifecycle").notice("Input method server started")
     }
 

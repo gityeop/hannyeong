@@ -2,6 +2,9 @@ import AppKit
 import InputMethodKit
 import HannyeongCore
 
+/// The app reads rule-lexicon.json from its bundle; harnesses run from the repository root.
+private let ruleLexicon = try! WordFrequencies.load(URL(fileURLWithPath: ".build/dependencies/rule-lexicon.json"))
+
 // The 43 AppKit CompositionSession checks of NativeEncoderQA, run with the personal file that
 // PersonalState.select chooses in a seeded temporary folder:
 //   same    — a file for the bundled model already exists (revision 3)
@@ -16,7 +19,25 @@ import HannyeongCore
     init(prefix: String, store: CorrectionStore, local: LocalDecisionClient) {
         view.isRichText = false; view.string = prefix
         view.setSelectedRange(NSRange(location: prefix.utf16.count, length: 0))
-        session = CompositionSession(client: view, corrections: store, localClient: local) { [weak self] in self?.errors.append($0) }
+        session = CompositionSession(client: view, corrections: store, localClient: local, wordFrequencies: ruleLexicon,
+                                     selectCommittedText: { [view] expected in
+                                         let end = view.selectedRange().location
+                                         guard end >= expected.utf16.count else {
+                                             throw LocalDecisionError(detail: "Native committed caret is before target")
+                                         }
+                                         let range = NSRange(location: end - expected.utf16.count, length: expected.utf16.count)
+                                         guard view.selectCommittedText(in: range, expected: expected) else {
+                                             throw LocalDecisionError(detail: "Native committed selection text changed")
+                                         }
+                                         return range
+                                     }, confirmCommittedText: { [view] expected in
+                                         let end = view.selectedRange().location
+                                         guard end >= expected.utf16.count,
+                                               (view.string as NSString).substring(with: NSRange(location: end - expected.utf16.count, length: expected.utf16.count)) == expected else {
+                                             throw LocalDecisionError(detail: "Native commit suffix differs")
+                                         }
+                                         return end
+                                     }, forwardHostEvent: { [view] event in view.applyHostEvent(event) }) { [weak self] in self?.errors.append($0) }
     }
     func key(_ text: String, code: UInt16 = 0) {
         let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: text.first?.isUppercase == true ? .shift : [],
@@ -32,7 +53,7 @@ import HannyeongCore
     func wait() async throws {
         for _ in 0..<3000 {
             guard errors.isEmpty else { throw LocalDecisionError(detail: errors.joined(separator: "; ")) }
-            if !view.hasMarkedText() { return }
+            if !view.hasMarkedText() && !session.hasPendingRewrite { return }
             try await Task.sleep(for: .milliseconds(10))
         }
         throw LocalDecisionError(detail: "Composition did not finish")

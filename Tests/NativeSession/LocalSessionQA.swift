@@ -2,6 +2,9 @@ import AppKit
 import InputMethodKit
 import HannyeongCore
 
+/// The app reads rule-lexicon.json from its bundle; harnesses run from the repository root.
+private let ruleLexicon = try! WordFrequencies.load(URL(fileURLWithPath: ".build/dependencies/rule-lexicon.json"))
+
 @MainActor
 private final class Fixture {
     let view = NativeTextView(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
@@ -13,7 +16,25 @@ private final class Fixture {
         view.string = prefix
         view.setSelectedRange(NSRange(location: prefix.utf16.count, length: 0))
         session = CompositionSession(client: view,
-                                     corrections: store, localClient: local) { [weak self] message in
+                                     corrections: store, localClient: local, wordFrequencies: ruleLexicon,
+                                     selectCommittedText: { [view] expected in
+                                         let end = view.selectedRange().location
+                                         guard end >= expected.utf16.count else {
+                                             throw LocalDecisionError(detail: "Native committed caret is before target")
+                                         }
+                                         let range = NSRange(location: end - expected.utf16.count, length: expected.utf16.count)
+                                         guard view.selectCommittedText(in: range, expected: expected) else {
+                                             throw LocalDecisionError(detail: "Native committed selection text changed")
+                                         }
+                                         return range
+                                     }, confirmCommittedText: { [view] expected in
+                                         let end = view.selectedRange().location
+                                         guard end >= expected.utf16.count,
+                                               (view.string as NSString).substring(with: NSRange(location: end - expected.utf16.count, length: expected.utf16.count)) == expected else {
+                                             throw LocalDecisionError(detail: "Native commit suffix differs")
+                                         }
+                                         return end
+                                     }, forwardHostEvent: { [view] event in view.applyHostEvent(event) }) { [weak self] message in
             self?.errors.append(message)
         }
     }
@@ -37,7 +58,7 @@ private final class Fixture {
     func wait() async throws {
         for _ in 0..<300 {
             guard errors.isEmpty else { throw LocalDecisionError(detail: errors.joined(separator: "; ")) }
-            if !view.hasMarkedText() { return }
+            if !view.hasMarkedText() && !session.hasPendingRewrite { return }
             try await Task.sleep(for: .milliseconds(100))
         }
         throw LocalDecisionError(detail: "Native session did not finish within 30 seconds")

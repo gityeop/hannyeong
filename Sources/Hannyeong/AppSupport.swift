@@ -18,6 +18,7 @@ final class AppSupport: NSObject {
     func prepareLaunch(arguments: [String]) {
         installEditingMenu()
         if arguments.contains("--settings") { showSettings() }
+        if arguments.contains("--request-accessibility") { CommittedTextSelection.requestAccess() }
         prepareLocalModel()
     }
 

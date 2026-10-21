@@ -75,6 +75,8 @@ final class InputController: IMKInputController {
             reportError("InputMethodKit에서 키 이벤트를 받지 못했습니다.")
             return true
         }
+        defer { if event.type == .keyDown { session?.finishInputEvent() } }
+        if ReplayedInputEvent.consume(event) { return false }
         if event.type == .leftMouseDown {
             rightCommand.cancel()
             closeFeedback()
