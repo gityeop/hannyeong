@@ -1,17 +1,16 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-  <channel>
-    <title>한녕 업데이트</title>
-    <link>https://gityeop.github.io/hannyeong/</link>
-    <description>한녕의 정식 업데이트</description>
-    <language>ko</language>
-    <item>
-      <title>한녕 0.4.1</title>
-      <sparkle:version>110</sparkle:version>
-      <sparkle:shortVersionString>0.4.1</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>15.0.0</sparkle:minimumSystemVersion>
-      <link>https://github.com/gityeop/hannyeong/releases/tag/v0.4.1</link>
-      <sparkle:informationalUpdate/>
-    </item>
-  </channel>
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Hannyeong</title>
+        <item>
+            <title>0.4.2</title>
+            <pubDate>Wed, 21 Oct 2026 11:32:31 +0900</pubDate>
+            <link>https://gityeop.github.io/hannyeong/</link>
+            <sparkle:version>111</sparkle:version>
+            <sparkle:shortVersionString>0.4.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.2/Hannyeong-0.4.2-arm64.zip" length="53219016" type="application/octet-stream" sparkle:edSignature="wIKTVEStmPphTSJ05x4kS7cKVhsgcANWDjNvjkP5s3GDyK2fciqtcgRAHQAwVQqRwZSsMCW2M5M8YKErGAGeDw=="/>
+        </item>
+    </channel>
 </rss>
