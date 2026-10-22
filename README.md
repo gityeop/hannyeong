@@ -49,7 +49,7 @@ open "$HOME/Library/Input Methods/Hannyeong.app" --args --settings
 
 공증과 스테이플을 마친 `Hannyeong.app`에서 `scripts/build-update.sh /절대/경로/Hannyeong.app /새/출력/폴더`를 실행하면 서명된 업데이트 ZIP과 `appcast.xml`을 만듭니다. 앱의 버전과 빌드 번호를 이전 배포보다 높여야 합니다. ZIP은 해당 GitHub Release에 올리고, 생성된 `appcast.xml`은 `website/appcast.xml`로 반영해 사이트를 배포합니다. 스크립트는 업로드하거나 사이트를 배포하지 않습니다.
 
-업데이트 서명 키는 이 Mac의 키체인 계정 `com.yeop.inputmethod.Hannyeong`에 있습니다. 처음 서명할 때 macOS가 이 키의 키체인 접근 허용을 요청할 수 있습니다. 개인 키를 저장소에 넣지 않습니다. 공개 키는 앱의 `SUPublicEDKey`에 고정되어 있으므로 이후 배포에서도 같은 서명 키를 사용해야 합니다. 자동 업데이트 기능이 없는 0.4.1 이하 버전은 0.4.4 pkg를 한 번 설치해야 합니다.
+업데이트 서명 키는 이 Mac의 키체인 계정 `com.yeop.inputmethod.Hannyeong`에 있습니다. 처음 서명할 때 macOS가 이 키의 키체인 접근 허용을 요청할 수 있습니다. 개인 키를 저장소에 넣지 않습니다. 공개 키는 앱의 `SUPublicEDKey`에 고정되어 있으므로 이후 배포에서도 같은 서명 키를 사용해야 합니다. 자동 업데이트 기능이 없는 0.4.1 이하 버전은 0.4.5 pkg를 한 번 설치해야 합니다.
 
 로컬 업데이트 엔진 검사: `Tests/Updater/test-updater.sh` (Developer ID 서명 인증서 필요). 실제 Sparkle와 로컬 HTTP 서버를 사용해 버전 판별, 잘못된 피드 처리, 자동 업데이트 설정 저장, 별도 테스트 앱의 다운로드·설치·재실행, 변조된 ZIP 거부를 검사합니다. 설치 검사는 임시 테스트 서명 키를 사용하며 배포 키나 설치된 한녕을 변경하지 않습니다.
 
