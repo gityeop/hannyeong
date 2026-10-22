@@ -5,6 +5,7 @@ import os
 final class NoticePanel {
     private let panel = InputPopupPanel()
     private let logger = Logger(subsystem: "com.yeop.inputmethod.Hannyeong", category: "Notice")
+    private var escapeMonitor: Any?
     var isVisible: Bool { panel.isVisible }
 
     func show(_ message: String, at caretRect: NSRect?) {
@@ -43,11 +44,21 @@ final class NoticePanel {
             // App startup errors have no input client; keep their existing screen-corner placement.
             panel.setFrameTopLeftPoint(NSPoint(x: frame.maxX - width - 24, y: frame.maxY - 24))
         }
+        if escapeMonitor == nil {
+            // Terminal handles Escape itself once no marked composition remains.
+            escapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                if event.keyCode == 53 { self?.hide() }
+            }
+        }
         panel.orderFrontRegardless()
         logger.notice("Notice shown; visible=\(self.panel.isVisible) key=\(self.panel.isKeyWindow) width=\(self.panel.frame.width) height=\(self.panel.frame.height)")
     }
 
     @objc func hide() {
+        if let escapeMonitor {
+            NSEvent.removeMonitor(escapeMonitor)
+            self.escapeMonitor = nil
+        }
         guard panel.isVisible else { return }
         panel.orderOut(nil)
         logger.notice("Notice dismissed; visible=\(self.panel.isVisible)")

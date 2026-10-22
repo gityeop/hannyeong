@@ -104,6 +104,8 @@ final class InputController: IMKInputController {
         if event.type == .flagsChanged {
             if event.keyCode == 54 {
                 shortcutLogger.notice("IMK right Command modifier; flags=\(event.modifierFlags.rawValue) time=\(event.timestamp)")
+                // Terminal interprets unhandled modifier events as invalid text (<ffffffff>).
+                if previewHostBundleID == "com.apple.Terminal" { return true }
             }
             return false
         }

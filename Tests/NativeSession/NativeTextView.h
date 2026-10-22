@@ -18,4 +18,5 @@
 @interface NativeInputClient : NSObject <IMKTextInput>
 @property(strong) NativeTextView *view;
 @property BOOL hidesMarkedLocation;
+@property BOOL reportsCompositionStartAfterCommit;
 @end

@@ -49,8 +49,18 @@
 @end
 
 // Model IMK's missing location without changing NSTextView's own composition state.
-@implementation NativeInputClient
+@implementation NativeInputClient {
+    NSRange _committedSelection;
+}
 - (id)forwardingTargetForSelector:(SEL)selector { return self.view; }
+- (void)insertText:(id)text replacementRange:(NSRange)range {
+    _committedSelection = NSMakeRange(self.view.markedRange.location, 0);
+    [self.view insertText:text replacementRange:range];
+}
+- (NSRange)selectedRange {
+    return self.reportsCompositionStartAfterCommit && !self.view.hasMarkedText
+        ? _committedSelection : self.view.selectedRange;
+}
 - (NSRange)markedRange {
     NSRange range = self.view.markedRange;
     if (self.hidesMarkedLocation && range.length > 0) range.location = NSNotFound;

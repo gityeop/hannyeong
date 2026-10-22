@@ -297,6 +297,22 @@ final class CompositionSession {
     func toggleLanguage() {
         logDiagnostic("toggle_begin")
         do {
+            if !raw.isEmpty {
+                defer { reconsideration = nil }
+                try decideQueuedWords()
+                let pending = Conversion(raw: raw, selected: try preview(raw), separator: "", before: context,
+                                         range: client.markedRange(), source: .inlinePreview)
+                let alternate = try pending.selected == pending.raw ? HangulComposer.compose(pending.raw) : pending.raw
+                let toggleMemory = try remember(pending, alternate: alternate)
+                words.append(Word(raw: pending.raw, separator: ""))
+                raw = ""
+                // Replace the owned marked text before sending anything to the terminal's PTY.
+                try commitWords([alternate], source: .languageShortcut)
+                lastCommit?.languageAlternative = pending.selected
+                lastCommit?.toggleMemory = toggleMemory
+                logDiagnostic("toggle_complete")
+                return
+            }
             try finishPendingForShortcut(preservePreview: true)
             guard let previous = lastCommit else {
                 logDiagnostic("toggle_no_recent_conversion")
@@ -851,24 +867,28 @@ final class CompositionSession {
         // queued words first so suspension cannot commit or remove them a second time.
         words.removeFirst(count)
         onPreview?(nil)
+        let terminalMarkedRange = hostBundleID == "com.apple.Terminal" ? client.markedRange() : nil
         client.insertText(text, replacementRange: range)
         let before = String((preceding + texts.dropLast().joined()).suffix(120))
         context = String((preceding + text).suffix(120))
         let selection = client.selectedRange()
         contextSelection = selection
-        // Keep the conversion identity; AX confirms coordinates before a retained history is reused.
-        lastCommit = nil
         feedback = nil
-        if selection.location != NSNotFound, selection.length == 0,
+        var committedRange = NSRange(location: NSNotFound, length: 0)
+        if let marked = terminalMarkedRange {
+            // Terminal reports the former marked start after insertText, before its PTY has echoed the commit.
+            if marked.location != NSNotFound {
+                committedRange = NSRange(location: marked.location + text.utf16.count - last.utf16.count,
+                                         length: last.utf16.count)
+            }
+        } else if selection.location != NSNotFound, selection.length == 0,
            selection.location >= last.utf16.count {
             // The host may rebase its text storage while ending marked composition.
-            // Track the inserted text in the post-commit coordinate space used by selectedRange/string(from:).
-            let committedRange = NSRange(location: selection.location - last.utf16.count, length: last.utf16.count)
-            lastCommit = Conversion(id: word.id, raw: word.raw, selected: selected[selected.count - 1], separator: word.separator,
-                                    before: before, range: committedRange, source: source)
-        } else {
-            lastCommit = Conversion(id: word.id, raw: word.raw, selected: selected.last!, separator: word.separator,
-                before: before, range: NSRange(location: NSNotFound, length: 0), source: source)
+            committedRange = NSRange(location: selection.location - last.utf16.count, length: last.utf16.count)
+        }
+        lastCommit = Conversion(id: word.id, raw: word.raw, selected: selected.last!, separator: word.separator,
+                                before: before, range: committedRange, source: source)
+        if committedRange.location == NSNotFound {
             logDiagnostic("commit_complete_without_edit_target")
         }
         if !rawText.isEmpty { render() }
@@ -973,7 +993,7 @@ final class CompositionSession {
             diagnosticLogger.error("Session failure; session=\(self.diagnosticID, privacy: .public) stage=\(stage, privacy: .public) detail=\(failure.detail, privacy: .public)")
         } else {
             let failure = error as NSError
-            diagnosticLogger.error("Session failure; session=\(self.diagnosticID, privacy: .public) stage=\(stage, privacy: .public) domain=\(failure.domain, privacy: .public) code=\(failure.code)")
+            diagnosticLogger.error("Session failure; session=\(self.diagnosticID, privacy: .public) stage=\(stage, privacy: .public) domain=\(failure.domain, privacy: .public) code=\(failure.code) detail=\(error.localizedDescription, privacy: .private)")
         }
         logDiagnostic(stage)
     }
