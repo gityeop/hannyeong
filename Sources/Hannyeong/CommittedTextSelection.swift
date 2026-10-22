@@ -57,10 +57,7 @@ enum CommittedTextSelection {
                     let status = AXUIElementCopyParameterizedAttributeValue(field, kAXStringForRangeParameterizedAttribute as CFString,
                                                                           AXValueCreate(.cfRange, &span)!, &text)
                     // Chromium has no range value while applying a host Backspace; wait for that edit.
-                    if status != .noValue {
-                        try check(status, "committed range")
-                        if text as? String == expectedSuffix { return caret.location }
-                    }
+                    if try committedTextMatches(status: status, text: text, expected: expectedSuffix) { return caret.location }
                 }
                 try Task.checkCancellation()
                 Thread.sleep(forTimeInterval: 0.005)
@@ -88,9 +85,9 @@ enum CommittedTextSelection {
                AXValueGetValue(selected as! AXValue, .cfRange, &caret), caret.length == 0, caret.location >= expected.utf16.count {
                 var span = CFRange(location: caret.location - expected.utf16.count, length: expected.utf16.count)
                 var text: CFTypeRef?
-                try check(AXUIElementCopyParameterizedAttributeValue(field, kAXStringForRangeParameterizedAttribute as CFString,
-                                                                   AXValueCreate(.cfRange, &span)!, &text), "committed text")
-                if text as? String == expected { target = span; break }
+                let status = AXUIElementCopyParameterizedAttributeValue(field, kAXStringForRangeParameterizedAttribute as CFString,
+                                                                       AXValueCreate(.cfRange, &span)!, &text)
+                if try committedTextMatches(status: status, text: text, expected: expected) { target = span; break }
             }
             try Task.checkCancellation()
             Thread.sleep(forTimeInterval: 0.005)
@@ -115,6 +112,13 @@ enum CommittedTextSelection {
         } while Date() < deadline
         throw Failure.invalidTarget("selection was not applied")
     }
+    /// Chromium can temporarily have no range value while reflecting an IMK commit or host deletion.
+    static func committedTextMatches(status: AXError, text: CFTypeRef?, expected: String) throws -> Bool {
+        if status == .noValue { return false }
+        try check(status, "committed text")
+        return text as? String == expected
+    }
+
     private static func check(_ code: AXError, _ operation: String) throws {
         guard code == .success else { throw Failure.accessibility(operation, code) }
     }

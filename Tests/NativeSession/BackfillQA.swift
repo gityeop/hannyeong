@@ -12,16 +12,22 @@ private final class Fixture {
     let client = NativeInputClient()
     var errors: [String] = []
     var session: CompositionSession!
+    var selectionAttempts = 0
+    var selectionError: Error?
 
     init(prefix: String, store: CorrectionStore, local: LocalDecisionClient,
          axParagraphOffset: Int = 0,
+         defaults: UserDefaults = .standard,
          onPreview: ((String?) -> Void)? = nil) {
         view.isRichText = false
         view.string = prefix
         view.setSelectedRange(NSRange(location: prefix.utf16.count, length: 0))
         client.view = view
         session = CompositionSession(client: client, corrections: store, localClient: local, wordFrequencies: ruleLexicon,
-                                     selectCommittedText: { [view] expected in
+                                     previewDefaults: defaults,
+                                     selectCommittedText: { [view, weak self] expected in
+                                         self?.selectionAttempts += 1
+                                         if let error = self?.selectionError { throw error }
                                          let end = view.selectedRange().location
                                          guard end >= expected.utf16.count else {
                                              throw LocalDecisionError(detail: "Native committed caret is before target")
@@ -110,6 +116,83 @@ private struct BackfillQA {
             }
             log.append("\(name): \(fixture.view.string.debugDescription)")
         }
+        let suite = "HannyeongIssue4QA." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func require(_ condition: Bool, _ name: String) throws {
+            guard condition else { throw LocalDecisionError(detail: name) }
+            log.append(name)
+        }
+        try require(PriorWordCorrectionSettings.enabled(in: defaults), "priorCorrectionDefaultsToEnabled")
+        defaults.set(false, forKey: PriorWordCorrectionSettings.enabledKey)
+        try require(!PriorWordCorrectionSettings.enabled(in: UserDefaults(suiteName: suite)!), "priorCorrectionDisabledPersists")
+
+        // A not-yet-reflected Chromium range must keep the existing bounded wait alive.
+        try require(try !CommittedTextSelection.committedTextMatches(status: .noValue, text: nil, expected: "새 해 home "),
+                    "transientMissingAXRangeWaits")
+        try require(try CommittedTextSelection.committedTextMatches(status: .success, text: "새 해 home " as CFString, expected: "새 해 home "),
+                    "reflectedAXRangeMatches")
+        try require(try !CommittedTextSelection.committedTextMatches(status: .success, text: "다른 글자" as CFString, expected: "새 해 home "),
+                    "changedAXTextDoesNotMatch")
+        do {
+            _ = try CommittedTextSelection.committedTextMatches(status: .parameterizedAttributeUnsupported, text: nil, expected: "새 해 home ")
+            throw LocalDecisionError(detail: "Unsupported AX operation was silently accepted")
+        } catch CommittedTextSelection.Failure.accessibility(_, .parameterizedAttributeUnsupported) {
+            log.append("unsupportedAXRangeStillFails")
+        }
+
+        let disabled = Fixture(prefix: "", store: store, local: local, defaults: defaults)
+        disabled.type("to go home ")
+        try await disabled.settle()
+        try expect(disabled, "새 해 home ", "disabledKeepsPriorWords")
+        disabled.key("", code: 51)
+        disabled.key(" ")
+        disabled.type("dkssud")
+        disabled.key("\r", code: 36)
+        try await disabled.settle()
+        try expect(disabled, "새 해 home 안녕\n", "disabledPreservesBackspaceSpaceReturnAndCurrentConversion")
+        try require(disabled.selectionAttempts == 0, "disabledNeverSelectsCommittedText")
+
+        disabled.type("dkssud")
+        disabled.session.toggleLanguage()
+        try expect(disabled, "새 해 home 안녕\ndkssud", "manualToggleWorksWhenDisabled")
+        disabled.session.toggleLanguage()
+        await disabled.session.finishLearning()
+        try expect(disabled, "새 해 home 안녕\n안녕", "manualToggleRestoresWhenDisabled")
+
+        defaults.set(true, forKey: PriorWordCorrectionSettings.enabledKey)
+        let live = Fixture(prefix: "", store: store, local: local, defaults: defaults)
+        live.type("to go ")
+        defaults.set(false, forKey: PriorWordCorrectionSettings.enabledKey)
+        live.type("home ")
+        try await live.settle()
+        try expect(live, "새 해 home ", "disablingClearsRetainedPriorWords")
+        try require(live.selectionAttempts == 0, "liveDisableDoesNotRewrite")
+        defaults.set(true, forKey: PriorWordCorrectionSettings.enabledKey)
+        let enabled = Fixture(prefix: "", store: store, local: local, defaults: defaults)
+        enabled.type("to go home ")
+        try await enabled.settle()
+        try expect(enabled, "to go home ", "reenabledPriorCorrectionWorks")
+        try require(enabled.selectionAttempts == 1, "enabledUsesCommittedSelection")
+
+        let failed = Fixture(prefix: "", store: store, local: local, defaults: defaults)
+        failed.selectionError = CommittedTextSelection.Failure.accessibility("committed text", .parameterizedAttributeUnsupported)
+        failed.type("to go home ")
+        // Following physical events are buffered while the attempted rewrite runs.
+        failed.type("hello ")
+        try await failed.expectError()
+        for _ in 0..<100 where failed.session.hasPendingRewrite { try await Task.sleep(for: .milliseconds(10)) }
+        try expect(failed, "새 해 home hello ", "failedRewritePreservesAndDrainsTyping")
+        try require(failed.errors.count == 1 && failed.errors[0].contains("앞 단어 교정") && !failed.errors[0].contains("Space"),
+                    "rewriteFailureDoesNotOfferInvalidRetry")
+        defaults.set(false, forKey: PriorWordCorrectionSettings.enabledKey)
+        failed.errors.removeAll()
+        failed.type("to go home ")
+        try await failed.settle()
+        try require(failed.selectionAttempts == 1 && failed.errors.isEmpty, "disableAfterFailureStopsRepeatedCorrectionErrors")
+
+        if CommandLine.arguments.contains("--issue-4-only") { return log }
+
         // Hiding the real popup can reenter IMK and suspend the session during commit.
         var suspendOnHide = false
         var suspended: Fixture!

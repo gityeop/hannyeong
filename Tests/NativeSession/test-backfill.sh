@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# -ne 1 ]]; then
-    echo "usage: $0 <absolute local-runtime.json>" >&2
+if [[ $# -lt 1 ]]; then
+    echo "usage: $0 <absolute local-runtime.json> [--issue-4-only]" >&2
     exit 2
 fi
 TASK_RUNTIME="$1"
+shift
 TASK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$TASK_ROOT"
 export PKG_CONFIG_PATH="$TASK_ROOT/.build/dependencies/libhangul/lib/pkgconfig"
@@ -27,5 +28,5 @@ for TASK_TEST in BackfillQA RightCommandQA; do
         -import-objc-header Tests/NativeSession/NativeTextView.h \
         "${TASK_SOURCES[@]}" "Tests/NativeSession/$TASK_TEST.swift" \
         "$TASK_QA/NativeTextView.o" -o "$TASK_QA/$TASK_TEST"
-    "$TASK_QA/$TASK_TEST" "$TASK_RUNTIME"
+    "$TASK_QA/$TASK_TEST" "$TASK_RUNTIME" "$@"
 done

@@ -159,6 +159,7 @@ final class CompositionSession {
     }
 
     private func handleNow(_ event: NSEvent) -> Bool {
+        if !PriorWordCorrectionSettings.enabled(in: previewDefaults) { reconsideration = nil }
         if event.modifierFlags.intersection([.command, .control]).isEmpty == false,
            !(123...126).contains(event.keyCode) {
             commitHangul()
@@ -696,6 +697,7 @@ final class CompositionSession {
     /// The decisions the next word needs: one, or one per interpretation of the recent commits.
     private func nextRequests() throws -> (word: Word, requests: [@Sendable () async throws -> Decided])? {
         guard let word = nextWord else { return nil }
+        if !PriorWordCorrectionSettings.enabled(in: previewDefaults) { reconsideration = nil }
         guard let recent = reconsideration else { return (word, [try decision(for: word.raw, before: context)]) }
         return (word, try [recent.decided, recent.other].map { chain in
             try decision(for: word.raw, before: String((recent.before + zip(chain, recent.words).map { $0 + $1.separator }.joined()).suffix(120)))
@@ -765,7 +767,8 @@ final class CompositionSession {
     /// The other pure-language reading when the model was unsure between it and its choice,
     /// or when both readings are common words (so/내, go/해).
     private func otherReading(of result: Decided, for word: Word) throws -> String? {
-        guard Self.spaces(word.separator), let language = try language(of: result.text, raw: word.raw) else { return nil }
+        guard PriorWordCorrectionSettings.enabled(in: previewDefaults),
+              Self.spaces(word.separator), let language = try language(of: result.text, raw: word.raw) else { return nil }
         let korean = try HangulComposer.compose(word.raw)
         let other = language == .english ? korean : word.raw
         guard other != result.text, let probability = result.probabilities[other] else { return nil }
@@ -851,7 +854,7 @@ final class CompositionSession {
                                                         length: anchor.text.utf16.count)
                     }
                     AppSupport.shared.clearError()
-                } catch { self.report(error) }
+                } catch { self.report(error, committedEdit: true) }
                 self.rewriteTask = nil
                 await self.drainBufferedEvents()
             }
@@ -916,7 +919,7 @@ final class CompositionSession {
                 self.contextSelection = self.client.selectedRange()
             } catch {
                 self.reconsideration = nil
-                self.report(error)
+                self.report(error, committedEdit: true)
             }
             self.rewriteTask = nil
             await self.drainBufferedEvents()
@@ -948,7 +951,8 @@ final class CompositionSession {
     }
 
     private func pauseInput() throws {
-        guard let hostBundleID, CommittedTextSelection.isTrusted else { return }
+        guard PriorWordCorrectionSettings.enabled(in: previewDefaults),
+              let hostBundleID, CommittedTextSelection.isTrusted else { return }
         try CommittedInputEvents.shared.pause(owner: diagnosticID, hostBundleID: hostBundleID)
     }
 
@@ -964,17 +968,20 @@ final class CompositionSession {
     }
 
 
-    private func report(_ error: Error) {
+    private func report(_ error: Error, committedEdit: Bool = false) {
         onPreview?(nil)
-        logFailure(error, stage: "composition_failed")
+        let isCommittedEdit = committedEdit || error is CommittedTextSelection.Failure
+        logFailure(error, stage: isCommittedEdit ? "committed_edit_failed" : "composition_failed")
         // Log status/type without sending private typed text or response bodies to diagnostics.
         let failure = error as NSError
-        logger.error("Decision failed: \(failure.domain, privacy: .public) code \(failure.code)")
+        logger.error("Composition failed: \(failure.domain, privacy: .public) code \(failure.code)")
         if let failure = error as? CommittedTextSelection.Failure {
             diagnosticLogger.error("Committed selection failed: \(failure.localizedDescription, privacy: .public)")
         }
         if case CommittedTextSelection.Failure.permissionRequired = error {
             onError(error.localizedDescription)
+        } else if isCommittedEdit {
+            onError("앞 단어 교정을 완료하지 못했습니다. 입력한 내용과 커서 위치를 확인해 주세요.")
         } else {
             onError("판별하지 못했습니다. Space로 다시 시도하거나 Esc로 원문을 확정하세요.")
         }

@@ -74,6 +74,7 @@ struct SettingsView: View {
 private struct GeneralSettingsView: View {
     let animationsActive: Bool
     @AppStorage("composition.previewEnglish") private var previewEnglish = false
+    @AppStorage(PriorWordCorrectionSettings.enabledKey) private var priorWordCorrectionEnabled = true
     @AppStorage(CompositionPreviewSettings.alternateEnabledKey) private var alternatePreviewEnabled = true
     @AppStorage(CompositionPreviewSettings.alternateSizeKey)
     private var alternatePreviewSize = CompositionPreviewSettings.AlternateSize.medium
@@ -116,6 +117,17 @@ private struct GeneralSettingsView: View {
                         }
                         .disabled(!alternatePreviewEnabled)
                         .opacity(alternatePreviewEnabled ? 1 : 0.45)
+                        Divider()
+                        HStack {
+                            Text("앞 단어 자동 교정").font(.system(size: 14, weight: .medium))
+                            Spacer()
+                            Toggle("앞 단어 자동 교정", isOn: $priorWordCorrectionEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
+                                .focusable(false)
+                                .accessibilityIdentifier("prior-word-correction-enabled")
+                        }
                     }
                 }
                 SettingsCard {
