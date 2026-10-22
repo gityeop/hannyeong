@@ -3,14 +3,14 @@
     <channel>
         <title>Hannyeong</title>
         <item>
-            <title>0.4.5</title>
-            <pubDate>Thu, 22 Oct 2026 10:50:03 +0900</pubDate>
+            <title>0.4.6</title>
+            <pubDate>Thu, 22 Oct 2026 15:16:40 +0900</pubDate>
             <link>https://gityeop.github.io/hannyeong/</link>
-            <sparkle:version>114</sparkle:version>
-            <sparkle:shortVersionString>0.4.5</sparkle:shortVersionString>
+            <sparkle:version>115</sparkle:version>
+            <sparkle:shortVersionString>0.4.6</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.5/Hannyeong-0.4.5-arm64.zip" length="53230792" type="application/octet-stream" sparkle:edSignature="XDih7e0hpPiWvAidDZAghbio+VE/wpqOOLRjtT5arya1PW0Js5CKTrbncagk+Ad5d0LBLgub7sz1HiAEBoa6Aw=="/>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.6/Hannyeong-0.4.6-arm64.zip" length="53233766" type="application/octet-stream" sparkle:edSignature="wiGFIJNFZTnVyqvcMAmy+H+ciWO6uJSEmOhbbpTyTLyJqVYCRalx9D8YJaKkaNbjyy3RxS0HzcPYcMaGertxAw=="/>
         </item>
     </channel>
 </rss>
