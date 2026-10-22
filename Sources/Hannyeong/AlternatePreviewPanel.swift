@@ -14,7 +14,6 @@ final class AlternatePreviewPanel {
 
     init() {
         panel.ignoresMouseEvents = true
-        label.font = .systemFont(ofSize: 16, weight: .medium)
         label.textColor = .labelColor
         label.lineBreakMode = .byCharWrapping
         label.setAccessibilityIdentifier("alternate-word-preview")
@@ -43,12 +42,18 @@ final class AlternatePreviewPanel {
         }
         let caretRect = wordCaretRect!
         let screen = NSScreen.screens.first { $0.frame.contains(caretRect.origin) }
-        let maxWidth = min(480, (screen?.visibleFrame.width ?? 480) - 24)
+        let fontSize = CompositionPreviewSettings.alternateSize(in: .standard).fontSize
+        let scale = fontSize / 16
+        let inset = NSSize(width: round(12 * scale), height: round(8 * scale))
+        let maxWidth = min(480 * scale, (screen?.visibleFrame.width ?? 480 * scale) - 24)
+        label.font = .systemFont(ofSize: fontSize, weight: .medium)
         label.stringValue = text
         let bounds = label.cell!.cellSize(forBounds:
-            NSRect(x: 0, y: 0, width: maxWidth - 24, height: .greatestFiniteMagnitude))
-        let size = NSSize(width: max(44, ceil(bounds.width) + 24), height: ceil(bounds.height) + 16)
-        label.frame = NSRect(x: 12, y: 8, width: size.width - 24, height: size.height - 16)
+            NSRect(x: 0, y: 0, width: maxWidth - inset.width * 2, height: .greatestFiniteMagnitude))
+        let size = NSSize(width: max(44 * scale, ceil(bounds.width) + inset.width * 2),
+                          height: ceil(bounds.height) + inset.height * 2)
+        label.frame = NSRect(x: inset.width, y: inset.height,
+                             width: size.width - inset.width * 2, height: size.height - inset.height * 2)
         let origin = Self.origin(for: size, above: caretRect, in: screen?.visibleFrame, previousOrigin: wordOrigin)
         wordOrigin = origin
         panel.setFrame(NSRect(origin: origin, size: size), display: true)

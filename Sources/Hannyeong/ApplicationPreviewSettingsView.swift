@@ -23,6 +23,26 @@ struct PreviewLanguageToggle: View {
     }
 }
 
+struct AlternatePreviewSizePicker: View {
+    @Binding var size: CompositionPreviewSettings.AlternateSize
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(CompositionPreviewSettings.AlternateSize.allCases, id: \.self) { item in
+                Button { size = item } label: { Text(item.title).frame(width: 48) }
+                    .buttonStyle(SettingsSegmentButtonStyle(selected: size == item))
+                    .focusable(false)
+                    .accessibilityAddTraits(size == item ? .isSelected : [])
+            }
+        }
+        .padding(3)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10)
+            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+        .accessibilityIdentifier("alternate-preview-size")
+    }
+}
+
 @MainActor
 struct ApplicationPreviewSettingsView: View {
     @Environment(\.dismiss) private var dismiss

@@ -75,6 +75,8 @@ private struct GeneralSettingsView: View {
     let animationsActive: Bool
     @AppStorage("composition.previewEnglish") private var previewEnglish = false
     @AppStorage(CompositionPreviewSettings.alternateEnabledKey) private var alternatePreviewEnabled = true
+    @AppStorage(CompositionPreviewSettings.alternateSizeKey)
+    private var alternatePreviewSize = CompositionPreviewSettings.AlternateSize.medium
     @State private var practiceText = ""
     @State private var commandAction: RightCommandGesture.Action?
     @State private var commandSequence = 0
@@ -106,6 +108,14 @@ private struct GeneralSettingsView: View {
                                 .focusable(false)
                                 .accessibilityIdentifier("alternate-preview-enabled")
                         }
+                        Divider()
+                        HStack {
+                            Text("미리보기 크기").font(.system(size: 14, weight: .medium))
+                            Spacer()
+                            AlternatePreviewSizePicker(size: $alternatePreviewSize)
+                        }
+                        .disabled(!alternatePreviewEnabled)
+                        .opacity(alternatePreviewEnabled ? 1 : 0.45)
                     }
                 }
                 SettingsCard {
