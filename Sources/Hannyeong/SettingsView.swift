@@ -74,6 +74,7 @@ struct SettingsView: View {
 private struct GeneralSettingsView: View {
     let animationsActive: Bool
     @AppStorage("composition.previewEnglish") private var previewEnglish = false
+    @AppStorage(CompositionPreviewSettings.liveEnabledKey) private var liveDetectionEnabled = false
     @AppStorage(PriorWordCorrectionSettings.enabledKey) private var priorWordCorrectionEnabled = true
     @AppStorage(CompositionPreviewSettings.alternateEnabledKey) private var alternatePreviewEnabled = true
     @AppStorage(CompositionPreviewSettings.alternateSizeKey)
@@ -91,6 +92,21 @@ private struct GeneralSettingsView: View {
                 SettingsCard {
                     VStack(spacing: 14) {
                         HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("입력 중 자동 판별 — 실험").font(.system(size: 14, weight: .medium))
+                                Text("Direct 방식으로 타이핑 중 한영을 판별합니다. 최근 입력 언어를 이어받고, 기존 교정 기록과 학습을 함께 사용합니다.")
+                                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Toggle("입력 중 자동 판별 — 실험", isOn: $liveDetectionEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
+                                .focusable(false)
+                                .accessibilityIdentifier("live-detection-enabled")
+                        }
+                        Divider()
+                        HStack {
                             Text("입력 중 기본 표시").font(.system(size: 14, weight: .medium))
                             Spacer()
                             PreviewLanguageToggle(english: $previewEnglish)
@@ -98,6 +114,8 @@ private struct GeneralSettingsView: View {
                                 .buttonStyle(SettingsSmallButtonStyle())
                                 .focusable(false)
                         }
+                        .disabled(liveDetectionEnabled)
+                        .opacity(liveDetectionEnabled ? 0.45 : 1)
                         Divider()
                         HStack {
                             Text("반대 언어 미리보기").font(.system(size: 14, weight: .medium))
@@ -109,14 +127,16 @@ private struct GeneralSettingsView: View {
                                 .focusable(false)
                                 .accessibilityIdentifier("alternate-preview-enabled")
                         }
+                        .disabled(liveDetectionEnabled)
+                        .opacity(liveDetectionEnabled ? 0.45 : 1)
                         Divider()
                         HStack {
                             Text("미리보기 크기").font(.system(size: 14, weight: .medium))
                             Spacer()
                             AlternatePreviewSizePicker(size: $alternatePreviewSize)
                         }
-                        .disabled(!alternatePreviewEnabled)
-                        .opacity(alternatePreviewEnabled ? 1 : 0.45)
+                        .disabled(liveDetectionEnabled || !alternatePreviewEnabled)
+                        .opacity(!liveDetectionEnabled && alternatePreviewEnabled ? 1 : 0.45)
                         Divider()
                         HStack {
                             Text("앞 단어 자동 교정").font(.system(size: 14, weight: .medium))

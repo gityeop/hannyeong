@@ -87,10 +87,15 @@ final class CompositionSession {
     }
 
     private let client: any IMKTextInput
+    private let inlineComposition: InlineComposition
     private let corrections: CorrectionStore
     private let localClient: LocalDecisionClient?
     private let wordFrequencies: WordFrequencies?
     private let previewDefaults: UserDefaults
+    private let liveDetectionOverride: Bool?
+    private var liveDetectionEnabled: Bool {
+        liveDetectionOverride ?? previewDefaults.bool(forKey: CompositionPreviewSettings.liveEnabledKey)
+    }
     private let hostBundleID: String?
     private let onPreviewStart: (() -> Void)?
     private let onPreview: ((String?) -> Void)?
@@ -100,14 +105,30 @@ final class CompositionSession {
     let diagnosticID = UUID().uuidString
     private var words: [Word] = []
     private var reconsideration: Reconsideration?
-    private var raw = ""
+    private var raw = "" {
+        didSet {
+            if raw != oldValue {
+                cancelLivePreview()
+                if raw.isEmpty { livePreviewKoreanStart = nil }
+            }
+        }
+    }
+    private var livePreviewTask: Task<Void, Never>?
+    private var livePreviewText: String?
+    /// nil keeps English; 0 composes Korean; a mixed reading retains its English prefix.
+    private var livePreviewKoreanStart: Int?
     private let selectCommittedText: (String) async throws -> NSRange
     private let confirmCommittedText: (String) async throws -> Int
     private let forwardHostEvent: (NSEvent) async throws -> Void
+    private let usesTerminalKeyReplacement: () async throws -> Bool
+    private let nativeTerminalClient: Bool
+    private let prepareNativeTerminalEdit: (String) async throws -> NativeTerminalOwnership.Edit
+    private var inputGeneration = 0
     private var rewriteTask: Task<Void, Never>?
+    private var inlineTask: Task<Void, Never>?
     private var bufferedEvents: [NSEvent] = []
     private var drainingEvents = false
-    var hasPendingRewrite: Bool { rewriteTask != nil || drainingEvents }
+    var hasPendingRewrite: Bool { rewriteTask != nil || inlineTask != nil || drainingEvents }
     private var context = ""
     private var contextSelection: NSRange?
     private var learning: Task<Void, Never>?
@@ -119,17 +140,23 @@ final class CompositionSession {
          localClient: LocalDecisionClient? = nil, wordFrequencies: WordFrequencies? = nil,
          previewDefaults: UserDefaults = .standard,
          hostBundleID: String? = nil,
+         liveDetectionOverride: Bool? = nil,
          selectCommittedText: ((String) async throws -> NSRange)? = nil,
          confirmCommittedText: ((String) async throws -> Int)? = nil,
          forwardHostEvent: ((NSEvent) async throws -> Void)? = nil,
+         usesTerminalKeyReplacement: (() async throws -> Bool)? = nil,
+         nativeTerminalClient: Bool? = nil,
+         prepareNativeTerminalEdit: ((String) async throws -> NativeTerminalOwnership.Edit)? = nil,
          onPreviewStart: (() -> Void)? = nil,
          onPreview: ((String?) -> Void)? = nil,
          onError: @escaping (String) -> Void) {
         self.client = client
+        self.inlineComposition = InlineComposition(client: client)
         self.corrections = corrections ?? CorrectionStore.shared
         self.localClient = localClient
         self.wordFrequencies = wordFrequencies
         self.previewDefaults = previewDefaults
+        self.liveDetectionOverride = liveDetectionOverride
         self.hostBundleID = hostBundleID
         self.selectCommittedText = selectCommittedText ?? { expected in
             try await CommittedTextSelection.select(expected, hostBundleID: hostBundleID)
@@ -140,6 +167,11 @@ final class CompositionSession {
         self.forwardHostEvent = forwardHostEvent ?? { event in
             try await ReplayedInputEvent.forward(event, hostBundleID: hostBundleID)
         }
+        self.usesTerminalKeyReplacement = usesTerminalKeyReplacement ?? {
+            try await TerminalInputReplacement.applies(hostBundleID: hostBundleID)
+        }
+        self.nativeTerminalClient = nativeTerminalClient ?? (hostBundleID == "com.apple.Terminal")
+        self.prepareNativeTerminalEdit = prepareNativeTerminalEdit ?? NativeTerminalOwnership.prepare
         self.onPreviewStart = onPreviewStart
         self.onPreview = onPreview
         self.onError = onError
@@ -147,6 +179,7 @@ final class CompositionSession {
     }
 
     func handle(_ event: NSEvent) -> Bool {
+        guard active else { return false }
         if hasPendingRewrite {
             bufferedEvents.append(event)
             return true
@@ -182,7 +215,7 @@ final class CompositionSession {
         case 36, 76:
             do {
                 try commitForReturn()
-                if rewriteTask != nil {
+                if rewriteTask != nil || inlineTask != nil {
                     bufferedEvents.append(event)
                     return true
                 }
@@ -230,6 +263,7 @@ final class CompositionSession {
 
     /// Immediate host commits preserve the Hangul composition shown to the user.
     func commitPending() {
+        if inlineTask != nil || rewriteTask != nil { cancelInlineEdit(); return }
         if !rawText.isEmpty { commitHangul() }
     }
 
@@ -238,13 +272,16 @@ final class CompositionSession {
     }
 
     func resume() {
+        if !active { inputGeneration += 1 }
         active = true
         logDiagnostic("session_resumed")
     }
 
     func suspend() {
+        inputGeneration += 1
+        cancelLivePreviewTask()
         CommittedInputEvents.shared.cancel(owner: diagnosticID)
-        commitPending()
+        if inlineTask != nil || rewriteTask != nil { cancelInlineEdit() } else { commitPending() }
         onPreview?(nil)
         active = false
         feedback = nil
@@ -252,8 +289,10 @@ final class CompositionSession {
     }
 
     func deactivate() {
+        inputGeneration += 1
+        cancelLivePreviewTask()
         CommittedInputEvents.shared.cancel(owner: diagnosticID)
-        commitPending()
+        if inlineTask != nil || rewriteTask != nil { cancelInlineEdit() } else { commitPending() }
         reconsideration = nil
         onPreview?(nil)
         active = false
@@ -270,7 +309,8 @@ final class CompositionSession {
         raw = ""
         onPreview?(nil)
         if !text.isEmpty {
-            client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            do { try insertPending(text) }
+            catch { report(error); return }
         }
         lastCommit = nil
         feedback = nil
@@ -286,7 +326,7 @@ final class CompositionSession {
             raw = ""
             onPreview?(nil)
             if !text.isEmpty {
-                client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+                try insertPending(text)
             }
             lastCommit = nil
             feedback = nil
@@ -301,7 +341,7 @@ final class CompositionSession {
             if !raw.isEmpty {
                 defer { reconsideration = nil }
                 try decideQueuedWords()
-                let pending = Conversion(raw: raw, selected: try preview(raw), separator: "", before: context,
+                let pending = Conversion(raw: raw, selected: try currentPreview(), separator: "", before: context,
                                          range: client.markedRange(), source: .inlinePreview)
                 let alternate = try pending.selected == pending.raw ? HangulComposer.compose(pending.raw) : pending.raw
                 let toggleMemory = try remember(pending, alternate: alternate)
@@ -413,10 +453,11 @@ final class CompositionSession {
         try decideQueuedWords()
         if !raw.isEmpty {
             let keys = raw
+            let displayed = try currentPreview()
             words.append(Word(raw: keys, separator: ""))
             raw = ""
-            render()
-            let selected = try preservePreview ? preview(keys) :
+            if !inlineComposition.isActive { render() }
+            let selected = try preservePreview ? displayed :
                 ReturnDecision.resolve(decision(for: keys, before: context)).text
             try commitWords([selected], source: preservePreview ? .inlinePreview : .automaticOrMemory)
         }
@@ -424,7 +465,7 @@ final class CompositionSession {
 
     /// Decides and commits every queued word in order.
     private func decideQueuedWords() throws {
-        while rewriteTask == nil, let next = try nextRequests() {
+        while rewriteTask == nil, inlineTask == nil, let next = try nextRequests() {
             try advance(next.requests.map { try ReturnDecision.resolve($0) })
         }
     }
@@ -436,30 +477,86 @@ final class CompositionSession {
     }
 
     private func preview(_ keys: String) throws -> String {
-        CompositionPreviewSettings.english(for: hostBundleID, in: previewDefaults)
+        if liveDetectionEnabled { return keys }
+        return CompositionPreviewSettings.english(for: hostBundleID, in: previewDefaults)
             ? keys : try HangulComposer.compose(keys)
     }
 
     private func previewText() throws -> String {
         return try words.map { word in
             (word.raw.isEmpty ? "" : try preview(word.raw)) + word.separator
-        }.joined() + (raw.isEmpty ? "" : try preview(raw))
+        }.joined() + (raw.isEmpty ? "" : try currentPreview())
+    }
+
+    private func currentPreview() throws -> String {
+        if liveDetectionEnabled {
+            if let livePreviewText { return livePreviewText }
+            if let start = livePreviewKoreanStart {
+                return String(raw.prefix(start)) + (try HangulComposer.compose(String(raw.dropFirst(start))))
+            }
+            return raw
+        }
+        return try preview(raw)
+    }
+
+    private func cancelLivePreviewTask() {
+        livePreviewTask?.cancel()
+        livePreviewTask = nil
+    }
+
+    private func cancelLivePreview() {
+        cancelLivePreviewTask()
+        livePreviewText = nil
+    }
+
+    private func requestLivePreview() {
+        guard active, liveDetectionEnabled,
+              inlineTask == nil, !raw.isEmpty, livePreviewTask == nil, livePreviewText == nil else { return }
+        let keys = raw, before = context
+        livePreviewTask = Task { @MainActor [weak self] in
+            do {
+                // Coalesce rapid keystrokes; typing itself never waits for the model.
+                try await Task.sleep(for: .milliseconds(80))
+                guard let self else { return }
+                let result = try await self.decision(for: keys, before: before)()
+                guard !Task.isCancelled, self.active, self.raw == keys,
+                      self.liveDetectionEnabled else { return }
+                guard let reading = try CandidateBuilder.candidates(for: keys, includeSplits: true)
+                    .first(where: { $0.text == result.text }) else {
+                    throw SessionError("The live decision is not a valid candidate.")
+                }
+                self.livePreviewKoreanStart = result.text == keys ? nil : (reading.splitIndex ?? 0)
+                self.livePreviewText = result.text
+                self.render()
+            } catch is CancellationError {
+                // A newer key or a completed composition owns the display now.
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                self.report(error)
+            }
+        }
     }
 
     private func render(replacementRange: NSRange = NSRange(location: NSNotFound, length: 0)) {
+        guard inlineTask == nil else { return }
         do {
             // A paragraph break is committed separately; marking it can replace a host paragraph.
             let text = try previewText().replacingOccurrences(of: "\n", with: "")
-            client.setMarkedText(text,
-                                 selectionRange: NSRange(location: text.utf16.count, length: 0),
-                                 replacementRange: replacementRange)
+            if liveDetectionEnabled || inlineComposition.isActive {
+                try updateInline(text, committing: false)
+            } else {
+                client.setMarkedText(text,
+                                     selectionRange: NSRange(location: text.utf16.count, length: 0),
+                                     replacementRange: replacementRange)
+            }
             if let onPreview {
                 // Only the word still being typed belongs in the alternate preview.
                 let alternate = raw.isEmpty || !CompositionPreviewSettings.alternateEnabled(in: previewDefaults) ? nil :
-                    (CompositionPreviewSettings.english(for: hostBundleID, in: previewDefaults)
-                        ? try HangulComposer.compose(raw) : raw)
+                    (try currentPreview() == raw ? HangulComposer.compose(raw) : raw)
                 onPreview(alternate)
             }
+            requestLivePreview()
+        } catch is CancellationError {
         } catch { report(error) }
     }
 
@@ -482,7 +579,7 @@ final class CompositionSession {
         if !raw.isEmpty {
             words.append(Word(raw: raw, separator: ""))
             raw = ""
-            render()
+            if !inlineComposition.isActive { render() }
         }
         try decideQueuedWords()
         reconsideration = nil
@@ -526,6 +623,39 @@ final class CompositionSession {
         if !raw.isEmpty {
             feedback = nil
             raw.removeLast()
+            let text: String
+            do { text = try previewText() }
+            catch { report(error); return true }
+            if nativeTerminalClient {
+                render()
+                return true
+            }
+            if inlineComposition.isActive, inlineComposition.requiresReplacement(text) {
+                // Chromium also applies the original Backspace when no composition
+                // is active. Let that host edit complete, then compose the remaining keys.
+                do { try pauseInput() }
+                catch { report(error); return true }
+                let remaining = String(inlineComposition.finishMarked().dropLast())
+                inlineComposition.adoptCommitted(remaining)
+                let generation = inputGeneration
+                inlineTask = Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    do {
+                        try self.checkInput(generation)
+                        let terminal = try await self.usesTerminalKeyReplacement()
+                        try self.checkInput(generation)
+                        guard !terminal else { throw SessionError("Terminal deletion has no host completion acknowledgement.") }
+                        _ = try await self.confirmCommittedText(remaining)
+                        try self.checkInput(generation)
+                        self.inlineTask = nil
+                        self.render()
+                        await self.drainBufferedEvents()
+                    } catch {
+                        self.failAutomaticEdit(error, generation: generation)
+                    }
+                }
+                return false
+            }
             render()
             return true
         }
@@ -541,6 +671,12 @@ final class CompositionSession {
             render()
             beginRequest()
             return true
+        }
+        if nativeTerminalClient {
+            reconsideration = nil
+            lastCommit = nil
+            contextSelection = nil
+            return false
         }
         if var recent = reconsideration, var commit = lastCommit,
            recent.words.last?.separator.last == " ", commit.separator.last == " ",
@@ -571,6 +707,11 @@ final class CompositionSession {
         feedback = nil
         if !raw.isEmpty {
             raw = ""
+            if inlineComposition.isActive {
+                _ = inlineComposition.finishMarked()
+                inlineComposition.adoptCommitted("")
+                return false
+            }
             render()
             return true
         }
@@ -755,7 +896,7 @@ final class CompositionSession {
         }
         try commitWords(replace ? recent.other : [decided.text], replacing: replace ? previous : nil)
         reconsideration = nil
-        if keep, let commit = lastCommit {
+        if keep, let commit = lastCommit, commit.range.location != NSNotFound {
             let length = recent.text.utf16.count, end = commit.range.location + commit.range.length
             if end >= length {
                 recent.range = NSRange(location: end - length, length: length)
@@ -830,21 +971,48 @@ final class CompositionSession {
             let expected = recent.text + committedText
             try commitWords(current, source: source)
             guard let anchor = lastCommit else { throw SessionError("The anchor has no committed edit target.") }
+            let generation = inputGeneration
             rewriteTask = Task { @MainActor [weak self] in
                 guard let self else { return }
+                await self.inlineTask?.value
                 do {
-                    let target = try await self.selectCommittedText(expected)
-                    guard self.active else { throw SessionError("Input session changed during committed edit.") }
-                    self.client.insertText(replacement, replacementRange: NSRange(location: NSNotFound, length: 0))
+                    try Task.checkCancellation()
+                    guard self.active, self.inputGeneration == generation else { throw CancellationError() }
+                    let terminal = try await self.usesTerminalKeyReplacement()
+                    try self.checkInput(generation)
+                    let target: NSRange
+                    let payload: String
+                    let nativeEdit: NativeTerminalOwnership.Edit?
+                    if self.nativeTerminalClient {
+                        nativeEdit = try await self.prepareNativeTerminalEdit(expected)
+                        target = NSRange(location: NSNotFound, length: 0)
+                        payload = String(repeating: "\u{7f}", count: expected.count) + replacement
+                    } else {
+                        guard !terminal else { throw SessionError("Terminal edits have no host completion acknowledgement.") }
+                        nativeEdit = nil
+                        target = try await self.selectCommittedText(expected)
+                        payload = replacement
+                    }
+                    try Task.checkCancellation()
+                    guard self.active, self.inputGeneration == generation else { throw CancellationError() }
+                    self.client.insertText(payload, replacementRange: NSRange(location: NSNotFound, length: 0))
+                    try self.checkInput(generation)
+                    if let nativeEdit {
+                        try await nativeEdit.confirm(replacement)
+                        try self.checkInput(generation)
+                    }
                     self.context = String((recent.before + replacement).suffix(120))
-                    self.contextSelection = NSRange(location: target.location + replacement.utf16.count, length: 0)
+                    self.contextSelection = self.client.selectedRange()
                     let last = currentWords.last!
                     self.lastCommit = Conversion(id: anchor.id, raw: last.raw, selected: current.last!, separator: last.separator,
                         before: String((recent.before + zip(selected.dropLast(), allWords.dropLast()).map { $0 + $1.separator }.joined()).suffix(120)),
-                        range: NSRange(location: target.location + replacement.utf16.count - anchor.text.utf16.count, length: anchor.text.utf16.count), source: source)
-                    let confirmedEnd = try await self.confirmCommittedText(self.lastCommit!.text)
-                    guard confirmedEnd == target.location + replacement.utf16.count else {
-                        throw SessionError("Committed rewrite ended at a different position.")
+                        range: target.location == NSNotFound ? target : NSRange(location: target.location + replacement.utf16.count - anchor.text.utf16.count, length: anchor.text.utf16.count), source: source)
+                    if !terminal {
+                        let confirmedEnd = try await self.confirmCommittedText(self.lastCommit!.text)
+                        try self.checkInput(generation)
+                        guard confirmedEnd == target.location + replacement.utf16.count else {
+                            throw SessionError("Committed rewrite ended at a different position.")
+                        }
                     }
                     self.contextSelection = self.client.selectedRange()
                     // IMK and AX use different paragraph offsets. Keep IMK edit records in IMK coordinates.
@@ -854,13 +1022,16 @@ final class CompositionSession {
                                                         length: anchor.text.utf16.count)
                     }
                     AppSupport.shared.clearError()
-                } catch { self.report(error, committedEdit: true) }
+                } catch {
+                    self.failAutomaticEdit(error, generation: generation)
+                    return
+                }
+                guard self.active, self.inputGeneration == generation else { return }
                 self.rewriteTask = nil
                 await self.drainBufferedEvents()
             }
             return
         }
-        let range = NSRange(location: NSNotFound, length: 0)
         let count = selected.count
         let committed = Array(words.prefix(count))
         let preceding = context
@@ -871,7 +1042,7 @@ final class CompositionSession {
         words.removeFirst(count)
         onPreview?(nil)
         let terminalMarkedRange = hostBundleID == "com.apple.Terminal" ? client.markedRange() : nil
-        client.insertText(text, replacementRange: range)
+        try insertPending(text)
         let before = String((preceding + texts.dropLast().joined()).suffix(120))
         context = String((preceding + text).suffix(120))
         let selection = client.selectedRange()
@@ -898,6 +1069,103 @@ final class CompositionSession {
         AppSupport.shared.clearError()
     }
 
+    private func insertPending(_ text: String) throws {
+        if inlineComposition.isActive {
+            try updateInline(text, committing: true)
+        } else {
+            client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+        }
+    }
+
+    private func updateInline(_ text: String, committing: Bool) throws {
+        if !nativeTerminalClient, !inlineComposition.requiresReplacement(text, committing: committing) {
+            if committing { inlineComposition.commit(text) } else { inlineComposition.render(text) }
+            return
+        }
+        try pauseInput()
+        let generation = inputGeneration
+        inlineTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try self.checkInput(generation)
+                if self.nativeTerminalClient {
+                    let expected = self.inlineComposition.committedText
+                    let edit = try await self.prepareNativeTerminalEdit(expected)
+                    try self.checkInput(generation)
+                    let shared = self.inlineComposition.sharedCommittedPrefix(with: text, committing: true)
+                    let payload = String(repeating: "\u{7f}", count: expected.count - shared.count)
+                        + String(text.dropFirst(shared.count))
+                    // This is the first and only host mutation. A failed confirmation never resends it.
+                    if !payload.isEmpty {
+                        self.client.insertText(payload, replacementRange: NSRange(location: NSNotFound, length: 0))
+                    }
+                    try self.checkInput(generation)
+                    try await edit.confirm(text)
+                    try self.checkInput(generation)
+                    self.inlineComposition.adoptCommitted(committing ? "" : text)
+                } else {
+                    let terminal = try await self.usesTerminalKeyReplacement()
+                    try self.checkInput(generation)
+                    guard !terminal else {
+                        throw SessionError("Terminal edits have no host completion acknowledgement.")
+                    }
+                    // Capability must be established before even committing the last marked character.
+                    let expected = self.inlineComposition.finishMarked()
+                    try self.checkInput(generation)
+                    _ = try await self.selectCommittedText(expected)
+                    try self.checkInput(generation)
+                    self.inlineComposition.replaceSelected(text, previous: expected, committing: committing)
+                    try self.checkInput(generation)
+                }
+                AppSupport.shared.clearError()
+            } catch {
+                self.failAutomaticEdit(error, generation: generation)
+                return
+            }
+            guard self.active, self.inputGeneration == generation else { return }
+            self.inlineTask = nil
+            if self.rewriteTask == nil {
+                // Do not schedule another identical native append merely to refresh the model request.
+                self.beginRequest()
+                self.requestLivePreview()
+                await self.drainBufferedEvents()
+            }
+        }
+    }
+
+    private func checkInput(_ generation: Int) throws {
+        try Task.checkCancellation()
+        guard active, inputGeneration == generation else { throw CancellationError() }
+    }
+
+    private func failAutomaticEdit(_ error: Error, generation: Int) {
+        guard inputGeneration == generation else { return }
+        cancelInlineEdit()
+        active = false
+        onPreview?(nil)
+        if !(error is CancellationError) { report(error, committedEdit: true) }
+    }
+
+    private func cancelInlineEdit() {
+        inputGeneration += 1
+        cancelLivePreview()
+        inlineTask?.cancel()
+        rewriteTask?.cancel()
+        inlineTask = nil
+        rewriteTask = nil
+        bufferedEvents.removeAll()
+        drainingEvents = false
+        CommittedInputEvents.shared.cancel(owner: diagnosticID)
+        raw = ""
+        words.removeAll()
+        reconsideration = nil
+        lastCommit = nil
+        context = ""
+        contextSelection = nil
+        feedback = nil
+        inlineComposition.adoptCommitted("")
+    }
+
     private func confirmRecentCommit() {
         guard let commit = lastCommit else { return }
         do { try pauseInput() }
@@ -908,18 +1176,21 @@ final class CompositionSession {
             return
         }
         let expected = commit.text
+        let generation = inputGeneration
         rewriteTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                try self.checkInput(generation)
                 let end = try await self.confirmCommittedText(expected)
+                try self.checkInput(generation)
                 self.lastCommit?.range = NSRange(location: end - commit.text.utf16.count, length: commit.text.utf16.count)
                 if let recent = self.reconsideration {
                     self.reconsideration?.range = NSRange(location: end - recent.text.utf16.count, length: recent.text.utf16.count)
                 }
                 self.contextSelection = self.client.selectedRange()
             } catch {
-                self.reconsideration = nil
-                self.report(error, committedEdit: true)
+                self.failAutomaticEdit(error, generation: generation)
+                return
             }
             self.rewriteTask = nil
             await self.drainBufferedEvents()
@@ -927,31 +1198,35 @@ final class CompositionSession {
     }
 
     private func drainBufferedEvents() async {
+        let generation = inputGeneration
         drainingEvents = true
         defer {
-            drainingEvents = false
-            if rewriteTask == nil, bufferedEvents.isEmpty {
-                CommittedInputEvents.shared.release(owner: diagnosticID)
+            if inputGeneration == generation {
+                drainingEvents = false
+                if rewriteTask == nil, inlineTask == nil, bufferedEvents.isEmpty {
+                    CommittedInputEvents.shared.release(owner: diagnosticID)
+                }
             }
         }
         guard active else { bufferedEvents.removeAll(); return }
-        while rewriteTask == nil, !bufferedEvents.isEmpty {
+        while active, inputGeneration == generation, rewriteTask == nil, inlineTask == nil, !bufferedEvents.isEmpty {
             let event = bufferedEvents.removeFirst()
             if !handleNow(event) {
                 do {
                     try await forwardHostEvent(event)
+                    try checkInput(generation)
                     if event.keyCode == 51, reconsideration != nil {
                         confirmRecentCommit()
                         return
                     }
                 }
-                catch { report(error); return }
+                catch { failAutomaticEdit(error, generation: generation); return }
             }
         }
     }
 
     private func pauseInput() throws {
-        guard PriorWordCorrectionSettings.enabled(in: previewDefaults),
+        guard (PriorWordCorrectionSettings.enabled(in: previewDefaults) || liveDetectionEnabled),
               let hostBundleID, CommittedTextSelection.isTrusted else { return }
         try CommittedInputEvents.shared.pause(owner: diagnosticID, hostBundleID: hostBundleID)
     }
@@ -981,7 +1256,7 @@ final class CompositionSession {
         if case CommittedTextSelection.Failure.permissionRequired = error {
             onError(error.localizedDescription)
         } else if isCommittedEdit {
-            onError("앞 단어 교정을 완료하지 못했습니다. 입력한 내용과 커서 위치를 확인해 주세요.")
+            onError("자동 교정을 중단했습니다. 입력한 내용과 커서 위치를 확인해 주세요.")
         } else {
             onError("판별하지 못했습니다. Space로 다시 시도하거나 Esc로 원문을 확정하세요.")
         }

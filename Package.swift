@@ -15,8 +15,9 @@ let package = Package(
     targets: [
         .systemLibrary(name: "CLibHangul", pkgConfig: "libhangul"),
         .target(name: "HannyeongCore", dependencies: ["CLibHangul"]),
+        .target(name: "HannyeongInputRuntime", dependencies: ["HannyeongCore"], linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("Carbon")]),
         .executableTarget(name: "HannyeongEval", dependencies: ["HannyeongCore"]),
-        .executableTarget(name: "Hannyeong", dependencies: ["HannyeongCore", .product(name: "Sparkle", package: "Sparkle")], linkerSettings: [
+        .executableTarget(name: "Hannyeong", dependencies: ["HannyeongCore", "HannyeongInputRuntime", .product(name: "Sparkle", package: "Sparkle")], linkerSettings: [
             .linkedFramework("AppKit"), .linkedFramework("InputMethodKit"),
             .linkedFramework("Carbon"), .linkedFramework("SwiftUI"),
             .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])

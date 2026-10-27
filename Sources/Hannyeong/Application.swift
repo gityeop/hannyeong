@@ -82,6 +82,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         LegacyMigration.run()
+        NativeInputEngine.shared.prepare()
         guard let connectionName = Bundle.main.object(forInfoDictionaryKey: "InputMethodConnectionName") as? String,
               !connectionName.isEmpty else {
             Logger(subsystem: bundleID, category: "Lifecycle").error("InputMethodConnectionName is missing")
@@ -103,6 +104,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         Logger(subsystem: bundleID, category: "Lifecycle").notice("Application reopen received")
         AppSupport.shared.showSettings()
         return true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        secureInputSource.stop()
+        NativeInputEngine.shared.close()
     }
 }
 

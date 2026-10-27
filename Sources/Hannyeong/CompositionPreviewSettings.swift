@@ -2,6 +2,7 @@ import Foundation
 
 enum CompositionPreviewSettings {
     static let defaultKey = "composition.previewEnglish"
+    static let liveEnabledKey = "composition.liveDetectionEnabled"
     static let applicationsKey = "composition.previewByBundleID"
     static let alternateEnabledKey = "composition.alternatePreviewEnabled"
     static let alternateSizeKey = "composition.alternatePreviewSize"

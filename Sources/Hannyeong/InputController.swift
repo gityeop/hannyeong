@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import InputMethodKit
 import HannyeongCore
 import os
@@ -7,6 +8,8 @@ import os
 @objc(HannyeongInputController)
 final class InputController: IMKInputController {
     private var session: CompositionSession?
+    private var directMode = false
+    private var isActiveController = false
     private var feedbackWindow: FeedbackPanel?
     private var alternatePreview: AlternatePreviewPanel?
     private var previewHostBundleID: String?
@@ -36,12 +39,16 @@ final class InputController: IMKInputController {
             return nil
         }
         // The client already exists at initialization; its first key may precede activation.
-        prepareSession(for: client)
+        isActiveController = true
+        NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged),
+            name: UserDefaults.didChangeNotification, object: nil)
+        synchronizeMode(for: client)
         shortcutLogger.notice("Input controller initialized; id=\(String(describing: ObjectIdentifier(self)), privacy: .public) client=\(String(describing: client.bundleIdentifier()), privacy: .public)")
     }
 
     override func recognizedEvents(_ sender: Any!) -> Int {
-        Int(NSEvent.EventTypeMask([.keyDown, .flagsChanged, .leftMouseDown]).rawValue)
+        if directMode { return Int(NSEvent.EventTypeMask.keyDown.rawValue) }
+        return Int(NSEvent.EventTypeMask([.keyDown, .flagsChanged, .leftMouseDown]).rawValue)
     }
 
     override func activateServer(_ sender: Any!) {
@@ -52,8 +59,38 @@ final class InputController: IMKInputController {
             reportError("입력 클라이언트가 IMKTextInput을 제공하지 않습니다. 입력란을 다시 선택해 주세요.")
             return
         }
-        prepareSession(for: client)
+        isActiveController = true
+        synchronizeMode(for: client)
         shortcutLogger.notice("Input controller activated; id=\(String(describing: ObjectIdentifier(self)), privacy: .public)")
+    }
+
+    @objc private func preferencesChanged() {
+        guard isActiveController, directMode != NativeInputEngine.shared.experimentalEnabled,
+              let client = client() as? any IMKTextInput else { return }
+        synchronizeMode(for: client)
+    }
+
+    private func synchronizeMode(for client: any IMKTextInput) {
+        let direct = NativeInputEngine.shared.experimentalEnabled
+        if direct != directMode {
+            rightCommand.cancel()
+            closeFeedback()
+            alternatePreview?.hide()
+            session?.deactivate()
+            session = nil
+            directMode = direct
+        }
+        NativeInputEngine.shared.activate(hostBundleID: client.bundleIdentifier())
+        if direct {
+            let layouts = TISCreateInputSourceList([kTISPropertyInputSourceID: "com.apple.keylayout.ABC"] as CFDictionary, true).takeRetainedValue() as! [TISInputSource]
+            guard let abc = layouts.first, TISSetInputMethodKeyboardLayoutOverride(abc) == noErr else {
+                reportError("입력기를 준비하지 못했습니다. 입력 소스를 다시 선택해 주세요.")
+                return
+            }
+        } else {
+            prepareSession(for: client)
+        }
+        shortcutLogger.notice("Input owner selected; experimental=\(direct) legacySession=\(self.session != nil)")
     }
 
     private func prepareSession(for client: any IMKTextInput) {
@@ -63,6 +100,7 @@ final class InputController: IMKInputController {
             session?.deactivate()
             previewHostBundleID = client.bundleIdentifier()
             session = CompositionSession(client: client, hostBundleID: previewHostBundleID,
+                                         liveDetectionOverride: false,
                                          onPreviewStart: { [weak self] in self?.prepareAlternatePreview() },
                                          onPreview: { [weak self] text in self?.showAlternatePreview(text) }) { [weak self] message in
                 self?.showNotice(message)
@@ -71,6 +109,11 @@ final class InputController: IMKInputController {
     }
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
+        if directMode {
+            // An existing IMK client can keep its old modifier mask after the mode changes.
+            return event?.type == .flagsChanged && event?.keyCode == 54 &&
+                (sender as? any IMKTextInput)?.bundleIdentifier() == "com.apple.Terminal"
+        }
         guard let event else {
             reportError("InputMethodKit에서 키 이벤트를 받지 못했습니다.")
             return true
@@ -141,13 +184,19 @@ final class InputController: IMKInputController {
     }
 
     override func commitComposition(_ sender: Any!) {
+        guard !directMode else { return }
         shortcutLogger.info("Host requested composition commitment")
         session?.logDiagnostic("host_commit_requested")
         closeFeedback()
         session?.commitPending()
     }
 
+    // All conversion is owned by handle(_:) in basic mode or the tap in experimental mode.
+    override func inputText(_ string: String!, client sender: Any!) -> Bool { false }
+
     override func deactivateServer(_ sender: Any!) {
+        isActiveController = false
+        if directMode { NativeInputEngine.shared.recheckInputTarget() }
         rightCommand.cancel()
         closeFeedback()
         session?.suspend()
@@ -156,6 +205,9 @@ final class InputController: IMKInputController {
     }
 
     override func inputControllerWillClose() {
+        isActiveController = false
+        NotificationCenter.default.removeObserver(self)
+        if directMode { NativeInputEngine.shared.recheckInputTarget() }
         shortcutLogger.notice("Input controller closing; id=\(String(describing: ObjectIdentifier(self)), privacy: .public)")
         rightCommand.cancel()
         closeFeedback()
@@ -165,6 +217,7 @@ final class InputController: IMKInputController {
     }
 
     override func hidePalettes() {
+        NativeInputEngine.shared.hidePalettes()
         alternatePreview?.hide()
         closeFeedback()
         super.hidePalettes()
@@ -205,6 +258,7 @@ final class InputController: IMKInputController {
 
     // InputMethodKit dispatches menu selectors with a command dictionary as sender.
     override func showPreferences(_ sender: Any!) {
+        NativeInputEngine.shared.reset()
         shortcutLogger.notice("Input menu showPreferences received")
         closeFeedback()
         alternatePreview?.hide()

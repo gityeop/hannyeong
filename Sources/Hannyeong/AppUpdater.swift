@@ -18,6 +18,9 @@ final class AppUpdater: ObservableObject {
             .assign(to: &$lastUpdateCheckDate)
     }
 
-    func start() { controller.startUpdater() }
+    func start() {
+        guard Bundle.main.object(forInfoDictionaryKey: "HannyeongLivePrototype") as? Bool != true else { return }
+        controller.startUpdater()
+    }
     func checkForUpdates() { controller.checkForUpdates(nil) }
 }
