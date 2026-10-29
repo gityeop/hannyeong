@@ -4,7 +4,8 @@ import HannyeongInputRuntime
 @MainActor
 final class SecureInputSource {
     private let monitor = SecureInputMonitor(sourceID: "com.yeop.inputmethod.Hannyeong",
-        entering: { NativeInputEngine.shared.reset() })
+        entering: { NativeInputEngine.shared.reset() },
+        restored: { NativeInputEngine.shared.resumeAfterSecureInput() })
     func start() { monitor.start() }
     func stop() { monitor.stop() }
 }

@@ -26,6 +26,8 @@ final class DirectInputTap {
     private let sourceID: String
     private let managesInputSource: Bool
     private let latencyLogger: Logger
+    private var lastRoutingState: String?
+    private var observedFirstCommand = false
     private var liveDetection = true
     private var fixedLanguage: DirectBackfill.Language?
     private var tap: CFMachPort?
@@ -179,6 +181,8 @@ final class DirectInputTap {
         }
         session.setInitialLanguage(language)
         enabled = true
+        lastRoutingState = nil
+        observedFirstCommand = false
         functionKeysHeld.removeAll()
         changed(true)
     }
@@ -264,6 +268,10 @@ final class DirectInputTap {
         }
         let marker = event.getIntegerValueField(.eventSourceUserData)
         guard marker != KeyboardOutput.outputMarker, marker != KeyboardOutput.wakeMarker else { return }
+        if type == .keyDown, !observedFirstCommand {
+            observedFirstCommand = true
+            latencyLogger.notice("Keyboard observer received first key after resume; sourcePID=\(event.getIntegerValueField(.eventSourceUnixProcessID))")
+        }
         guard !KeyboardInput.isSoftwareText(event, systemKeyboardPIDs: systemKeyboardPIDs) else { return }
         let code = event.getIntegerValueField(.keyboardEventKeycode)
         if KeyboardInput.isFunctionKey(code) {
@@ -282,6 +290,10 @@ final class DirectInputTap {
             // while checking; passed keys are owned only if that exact field is confirmed.
             beginRouteCheck()
             refreshRoute()
+        } else if type == .keyDown, routeChecking || !routeKnown {
+            // A new physical key is a new focus observation after an AX error.
+            // The route worker checks it asynchronously; the key itself never waits.
+            refreshRoute()
         }
     }
 
@@ -294,7 +306,24 @@ final class DirectInputTap {
     private func routeFailed(_ error: DirectFocus.RouteError) {
         latencyLogger.error("Input target inspection failed: \(error.detail, privacy: .public)")
         beginRouteCheck()
-        // A fresh focus/menu/command event may classify a new route. Never retry AX here.
+        // A fresh focus/menu/command/key event may classify a new route. Never retry AX here.
+    }
+
+    private func traceRouting(_ type: CGEventType, _ event: CGEvent) {
+        guard enabled, type == .keyDown else { return }
+        let state: String
+        if KeyboardInput.isSoftwareText(event, systemKeyboardPIDs: systemKeyboardPIDs) { state = "software-text" }
+        else if IsSecureEventInputEnabled() { state = "secure-input" }
+        else if event.getIntegerValueField(.eventTargetUnixProcessID) > 0,
+                let route = textRoute, event.getIntegerValueField(.eventTargetUnixProcessID) != Int64(route.pid) { state = "target-mismatch" }
+        else if textRoute == nil { state = "no-text-route" }
+        else if !functionKeysHeld.isEmpty { state = "function-key-held" }
+        else if passthroughWord { state = "unowned-word" }
+        else if routeChecking { state = "checking-route" }
+        else { state = "composing" }
+        guard lastRoutingState != state else { return }
+        lastRoutingState = state
+        latencyLogger.notice("Typing route state=\(state, privacy: .public) known=\(self.routeKnown) checking=\(self.routeChecking) sourcePID=\(event.getIntegerValueField(.eventSourceUnixProcessID)) targetPID=\(event.getIntegerValueField(.eventTargetUnixProcessID))")
     }
 
     func receive(_ proxy: CGEventTapProxy, _ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -322,6 +351,7 @@ final class DirectInputTap {
             }
             return nil
         }
+        traceRouting(type, event)
         if KeyboardInput.isSoftwareText(event, systemKeyboardPIDs: systemKeyboardPIDs) {
             if enabled, type == .keyDown { reset() }
             return Unmanaged.passUnretained(event)

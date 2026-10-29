@@ -40,6 +40,10 @@ final class NativeInputEngine: NSObject {
 
     func reset() { engine?.reset() }
     func recheckInputTarget() { engine?.recheckInputTarget() }
+    func resumeAfterSecureInput() {
+        synchronizeSource()
+        engine?.resumeAfterSecureInput()
+    }
     func hidePalettes() { engine?.dismissCandidates() }
     func close() {
         do { try engine?.close() } catch { report(error) }
@@ -64,11 +68,15 @@ final class NativeInputEngine: NSObject {
     private func synchronizeSource() {
         guard let engine else { return }
         do {
-            if TypingEngine.currentSourceID == sourceID && experimentalEnabled {
+            let selected = TypingEngine.currentSourceID
+            if selected == sourceID && experimentalEnabled {
                 guard !failed else { return }
                 if !engine.enabled { try engine.start(); logger.notice("Native nonblocking typing enabled") }
             } else {
-                if engine.enabled { try engine.pause(); logger.notice("Native nonblocking typing paused") }
+                if engine.enabled {
+                    try engine.pause()
+                    logger.notice("Native nonblocking typing paused; selectedSource=\(selected, privacy: .public) experimental=\(self.experimentalEnabled)")
+                }
                 failed = false
             }
         } catch { report(error) }

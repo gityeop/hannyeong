@@ -47,6 +47,21 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
 
     @objc private func producersChanged() { refresh() }
 
+    func resume() {
+        if menuDepth > 0 { logger.notice("Input source resumed; clearing menu state depth=\(self.menuDepth)") }
+        menuDepth = 0
+        refresh()
+    }
+
+    private func eligibleTarget(_ target: DirectFocus?) -> DirectFocus? {
+        menuDepth > 0 ? nil : target
+    }
+
+    #if DIRECT_INPUT_QA
+    func menuOpenedForQA() { menuDepth += 1 }
+    func targetForQA(_ target: DirectFocus?) -> DirectFocus? { eligibleTarget(target) }
+    #endif
+
     @objc private func activationChanged(_ notification: Notification) {
         activePID = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
         menuDepth = 0
@@ -80,7 +95,7 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
                 switch result {
                 case .success(let (focus, keyboardPIDs)):
                     systemKeyboardPIDs = keyboardPIDs
-                    let target = menuDepth > 0 ? nil : focus.target
+                    let target = eligibleTarget(focus.target)
                     let isText = target != nil
                     if lastTextRoute != isText {
                         logger.notice("Input route classified; text=\(isText)")

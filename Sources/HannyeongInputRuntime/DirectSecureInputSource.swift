@@ -11,25 +11,32 @@ final class DirectSecureInputSource: NSObject {
     private let currentSource: @MainActor () -> String
     private let selectSource: @MainActor (String) throws -> Void
     private let entering: @MainActor () -> Void
+    private let restored: @MainActor () -> Void
     private let poll: @MainActor () -> Void
+    private let now: @MainActor () -> TimeInterval
     private let logger = Logger(subsystem: "com.yeop.HannyeongInputRuntime", category: "SecureInput")
     private var timer: Timer?
     private var previousSource: String
     private var secure = false
     private var restoreDirect = false
+    private var exitCandidate: (source: String, since: TimeInterval)?
     private var failed = false
 
     init(sourceID: String, entering: @escaping @MainActor () -> Void,
+         restored: @escaping @MainActor () -> Void = {},
          isSecure: @escaping @MainActor () -> Bool = { IsSecureEventInputEnabled() },
          currentSource: @escaping @MainActor () -> String = DirectSecureInputSource.systemSource,
          selectSource: @escaping @MainActor (String) throws -> Void = DirectSecureInputSource.systemSelect,
-         poll: @escaping @MainActor () -> Void = {}) {
+         poll: @escaping @MainActor () -> Void = {},
+         now: @escaping @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.sourceID = sourceID
         self.entering = entering
+        self.restored = restored
         self.isSecure = isSecure
         self.currentSource = currentSource
         self.selectSource = selectSource
         self.poll = poll
+        self.now = now
         previousSource = currentSource()
     }
 
@@ -48,7 +55,7 @@ final class DirectSecureInputSource: NSObject {
         guard !failed else { return }
         poll()
         let enabled = isSecure()
-        // No input-source lookup on unchanged polling ticks, and no work on the key path.
+        // The secure episode stays open while its exit settles. Other unchanged ticks do no source lookup.
         guard enabled != secure else { return }
         update(enabled: enabled, source: currentSource())
     }
@@ -67,6 +74,7 @@ final class DirectSecureInputSource: NSObject {
     private func update(enabled: Bool, source: String) {
         do {
             if enabled {
+                exitCandidate = nil
                 if !secure {
                     restoreDirect = source == sourceID || (source == Self.ascii && previousSource == sourceID)
                     secure = true
@@ -78,14 +86,33 @@ final class DirectSecureInputSource: NSObject {
                     logger.notice("Secure input source selected: ABC")
                 }
             } else {
-                let restore = secure && restoreDirect && source == Self.ascii
+                let restore = secure && restoreDirect && (source == Self.ascii || source == sourceID)
+                if restore {
+                    // Login submission can briefly release secure input before its final
+                    // source change. Finish only after the source and secure exit are quiet.
+                    let time = now()
+                    guard let candidate = exitCandidate, candidate.source == source else {
+                        exitCandidate = (source, time)
+                        return
+                    }
+                    guard time - candidate.since >= 0.2 else { return }
+                    if source == Self.ascii { try selectSource(sourceID) }
+                    let selected = currentSource()
+                    guard selected == sourceID else {
+                        throw NSError(domain: "HannyeongDirect.SecureInput", code: -2,
+                            userInfo: [NSLocalizedDescriptionKey: "Input source restoration was not applied: \(selected)"])
+                    }
+                    previousSource = selected
+                } else {
+                    previousSource = source
+                }
                 secure = false
                 restoreDirect = false
+                exitCandidate = nil
                 if restore {
-                    try selectSource(sourceID)
+                    restored()
                     logger.notice("Secure input ended; input source restored")
                 }
-                previousSource = currentSource()
             }
         } catch {
             failed = true

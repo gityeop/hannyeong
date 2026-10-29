@@ -67,6 +67,7 @@ private final class Harness {
     var submitted: [String] = []
     var errors: [Error] = []
     var wakeCount = 0
+    var routeRefreshes = 0
     var keyDurations: [TimeInterval] = []
     var inlineCompletionVisible = false
     var mutations: [String] = []
@@ -101,7 +102,8 @@ private final class Harness {
         if let number = Int(text), (1...9).contains(number) { input.chooseFeedback(number - 1); return true }
         return false
     }, correct: { [self] target, preferred in await MainActor.run { corrections.append((target, preferred)) } },
-    sourceID: nativeMode ? "com.yeop.inputmethod.Hannyeong" : DirectInputSource.direct, managesInputSource: !nativeMode)
+    sourceID: nativeMode ? "com.yeop.inputmethod.Hannyeong" : DirectInputSource.direct, managesInputSource: !nativeMode,
+    refreshRoute: { [self] in routeRefreshes += 1 })
 
     func decision(_ request: DirectSession.Snapshot) async throws -> DirectSession.Decision {
         try await withCheckedThrowingContinuation { requests.append((request, $0)) }
@@ -707,11 +709,52 @@ struct DirectInputQA {
             h.type("so"); try await h.settle(); h.flushWake()
             try require(h.input.enabled && h.errors.isEmpty && h.requests.isEmpty, "An AX route error stopped the engine or started a retry")
             let count = h.outputEventCount
+            let refreshes = h.routeRefreshes
             h.type("ka")
             try require(h.outputEventCount == count && h.deliveredPhysical == ["k", "a"], "Keys were retained after an AX route error")
+            try require(h.routeRefreshes > refreshes, "New typing did not recheck the input field after an AX route error")
             h.input.reset()
         }
-        print("PASS AX routing failure: recorded separately, no engine/source change, retry or retained keys")
+        for native in [false, true] {
+            let h = Harness(nativeMode: native); h.input.enableForQA()
+            h.input.configure(live: true, fixedEnglish: false, backfill: true)
+            h.focusChecks.failsAX = true
+            h.type("d"); try await h.settle()
+            let refreshes = h.routeRefreshes
+            h.focusChecks.failsAX = false
+            h.type("kssud")
+            try require(h.routeRefreshes > refreshes, "Typing after secure login did not request a fresh route")
+            let field = AXUIElementCreateApplication(h.pid)
+            h.input.updateRoute(.init(pid: h.pid, field: field, window: field, commands: .keyBindings), known: true)
+            try await h.resolve("안녕"); h.flushWake()
+            try require(h.text == "안녕" && h.input.enabled && h.errors.isEmpty,
+                        "Typing did not resume Hangul conversion after an AX route error")
+            h.input.reset()
+        }
+        print("PASS AX routing failure: no automatic retry or retained keys; a new key rechecks the route and resumes Hangul in native/Direct")
+
+        for native in [false, true] {
+            let h = Harness(nativeMode: native); h.input.enableForQA()
+            h.input.configure(live: true, fixedEnglish: false, backfill: true)
+            let monitor = InputRouteMonitor(sourceID: "QA", checking: {}, changed: { _, _, _ in })
+            let field = AXUIElementCreateApplication(h.pid)
+            let target = DirectFocus(pid: h.pid, field: field, window: field, commands: .keyBindings)
+            monitor.menuOpenedForQA()
+            h.input.updateRoute(monitor.targetForQA(target), known: true)
+            h.type("so")
+            try require(h.text == "so" && h.outputEventCount == 0, "An open menu allowed text conversion")
+            h.input.reset(); h.text = ""
+            // A source/password transition can omit the matching menu-closed notification.
+            monitor.resume()
+            h.input.updateRoute(monitor.targetForQA(target), known: true)
+            h.type("so")
+            try require(h.text == "내", "A stale menu state blocked Hangul typing after input-source restoration")
+            try await h.resolve("s"); try await h.resolve("내"); h.flushWake()
+            try require(h.text == "내" && h.input.enabled && h.errors.isEmpty,
+                        "The resumed route did not keep Hangul conversion active")
+            h.input.reset()
+        }
+        print("PASS native/Direct source restoration clears a stale menu gate and resumes real composition/output")
 
         for live in [false, true] {
             let h = Harness(nativeMode: true); h.input.enableForQA()

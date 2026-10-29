@@ -6,18 +6,21 @@ import Carbon
 public final class SecureInputMonitor: NSObject {
     private let sourceID: String
     private let entering: @MainActor () -> Void
+    private let restored: @MainActor () -> Void
     private var activePID: pid_t?
     private lazy var sudoPassword: SudoPasswordMonitor = SudoPasswordMonitor { [weak self] in self?.state.check() }
-    private lazy var state: DirectSecureInputSource = DirectSecureInputSource(sourceID: sourceID, entering: entering,
+    private lazy var state: DirectSecureInputSource = DirectSecureInputSource(sourceID: sourceID, entering: entering, restored: restored,
         isSecure: { [weak self] in IsSecureEventInputEnabled() || self?.sudoPassword.active == true },
         poll: { [weak self] in
             guard let self else { return }
             self.sudoPassword.refresh(rootPID: self.activePID, needed: self.state.shouldObserveSudo)
         })
 
-    public init(sourceID: String, entering: @escaping @MainActor () -> Void) {
+    public init(sourceID: String, entering: @escaping @MainActor () -> Void,
+                restored: @escaping @MainActor () -> Void = {}) {
         self.sourceID = sourceID
         self.entering = entering
+        self.restored = restored
     }
 
     public func start() {

@@ -62,10 +62,14 @@ public final class TypingEngine {
     }
 
     public func prepare() async throws { _ = try await runtime.client.prepare() }
-    public func start(restoring source: String? = nil) throws { try input.start(restoring: source) }
+    public func start(restoring source: String? = nil) throws {
+        try input.start(restoring: source)
+        routeMonitor.resume()
+    }
     public func pause() throws { try input.pause() }
     public func close() throws { routeMonitor.stop(); try input.close() }
     public func reset() { input.reset() }
+    public func resumeAfterSecureInput() { routeMonitor.resume() }
     public func recheckInputTarget() { routeMonitor.refresh() }
     public func dismissCandidates() { input.dismissCandidates() }
     public func configure(live: Bool, fixedEnglish: Bool?, backfill: Bool) {
