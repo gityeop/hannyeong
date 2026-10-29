@@ -3,6 +3,24 @@
     <channel>
         <title>Hannyeong</title>
         <item>
+            <title>0.4.10</title>
+            <pubDate>Thu, 29 Oct 2026 10:46:30 +0900</pubDate>
+            <link>https://gityeop.github.io/hannyeong/</link>
+            <sparkle:version>155</sparkle:version>
+            <sparkle:shortVersionString>0.4.10</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.10/Hannyeong-0.4.10-arm64.zip" length="53452840" type="application/octet-stream" sparkle:edSignature="+zFf6jPe4k78m3z/dUlAeVmc/GWKbnnxCskHuB8sMn20EkZRhK/yJJavR7RV5+9GIrkF+kupfA992nxSUxjsDA==" />
+            <description>&lt;h2&gt;한녕 0.4.10&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;입력 중 자동 판별 — 실험&lt;/strong&gt;을 사용할 때, 자동완성 검색창에서 한글 대신 영문이 입력되던 문제를 수정했습니다.&lt;/li&gt;
+&lt;li&gt;오른쪽 Command를 &lt;strong&gt;한 번&lt;/strong&gt; 누르면 현재 단어의 한·영만 반전합니다. 저장된 교정에 등록하거나 개인 학습에 반영하지 않습니다.&lt;/li&gt;
+&lt;li&gt;교정을 저장하려면 오른쪽 Command를 &lt;strong&gt;빠르게 두 번&lt;/strong&gt; 눌러 교정창을 연 뒤 원하는 후보를 선택하세요.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;기존 설정과 저장된 교정 기록은 유지됩니다.&lt;/p&gt;
+</description>
+        </item>
+        <item>
             <title>0.4.9</title>
             <pubDate>Wed, 28 Oct 2026 04:16:10 +0900</pubDate>
             <link>https://gityeop.github.io/hannyeong/</link>
