@@ -3,6 +3,24 @@
     <channel>
         <title>Hannyeong</title>
         <item>
+            <title>0.4.11</title>
+            <pubDate>Thu, 29 Oct 2026 16:42:30 +0900</pubDate>
+            <link>https://gityeop.github.io/hannyeong/</link>
+            <sparkle:version>158</sparkle:version>
+            <sparkle:shortVersionString>0.4.11</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.11/Hannyeong-0.4.11-arm64.zip" length="53457186" type="application/octet-stream" sparkle:edSignature="nnXNTQidLVvOjdNLX1dVLhnOVVbjrdF7vamqHTwxfpQqju1MlpGK6InRe5N9TSG5VW1UB2NW0Y5R5s+9WlpuCA==" />
+            <description>&lt;h2&gt;한녕 0.4.11&lt;/h2&gt;
+&lt;p&gt;&lt;strong&gt;입력 중 자동 판별 — 실험&lt;/strong&gt;에서 다음 문제를 수정했습니다.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;비밀번호 입력·로그인 후 일반 입력칸에서 한녕으로 전환돼도 영문만 입력되던 문제를 수정했습니다.&lt;/li&gt;
+&lt;li&gt;입력란 확인 오류 후 자동 판별이 멈추던 문제를 수정했습니다. 다음 입력에서 입력란을 다시 확인하고 자동 판별을 이어갑니다.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;기존 설정과 저장된 교정 기록은 유지됩니다.&lt;/p&gt;
+</description>
+        </item>
+        <item>
             <title>0.4.10</title>
             <pubDate>Thu, 29 Oct 2026 10:46:30 +0900</pubDate>
             <link>https://gityeop.github.io/hannyeong/</link>
