@@ -22,7 +22,6 @@ final class DirectInputTap {
     private let feedbackCommand: (Int64, String) -> Bool
     private let feedbackContains: (CGEvent) -> Bool
     private let correct: (DirectSession.FeedbackTarget, String) async throws -> Void
-    private let toggled: (DirectSession.FeedbackTarget, String) -> Void
     private let previewChanged: (String, String) -> Void
     private let sourceID: String
     private let managesInputSource: Bool
@@ -76,7 +75,6 @@ final class DirectInputTap {
          feedbackCommand: @escaping (Int64, String) -> Bool = { _, _ in false },
          feedbackContains: @escaping (CGEvent) -> Bool = { _ in false },
          correct: @escaping (DirectSession.FeedbackTarget, String) async throws -> Void = { _, _ in },
-         toggled: @escaping (DirectSession.FeedbackTarget, String) -> Void = { _, _ in },
          previewChanged: @escaping (String, String) -> Void = { _, _ in },
          sourceID: String = DirectInputSource.direct, managesInputSource: Bool = true,
          invalidateRoute: @escaping () -> Void = {}, refreshRoute: @escaping () -> Void = {}) throws {
@@ -96,7 +94,6 @@ final class DirectInputTap {
         self.feedbackCommand = feedbackCommand
         self.feedbackContains = feedbackContains
         self.correct = correct
-        self.toggled = toggled
         self.previewChanged = previewChanged
         self.sourceID = sourceID
         self.managesInputSource = managesInputSource
@@ -602,10 +599,8 @@ final class DirectInputTap {
         generation += 1
         ready = nil
         lastDecided = nil
-        let target = session.feedbackTarget
         if let edit = try session.toggleLanguage() {
             try emit(edit, proxy)
-            if let target, let selected = session.feedbackTarget { toggled(target, selected.text) }
         }
         requestDecision()
     }

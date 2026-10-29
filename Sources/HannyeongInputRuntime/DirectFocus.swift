@@ -28,12 +28,15 @@ struct DirectFocus {
         guard focused == .success, let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
             throw RouteError(detail: "Reading the input route failed (AX \(focused.rawValue)).")
         }
-        let field = value as! AXUIElement
-        AXUIElementSetMessagingTimeout(field, 0.1)
+        let focusedField = value as! AXUIElement
         var pid: pid_t = 0
-        guard AXUIElementGetPid(field, &pid) == .success, pid > 0 else {
+        guard AXUIElementGetPid(focusedField, &pid) == .success, pid > 0 else {
             throw RouteError(detail: "The focused input field has no process owner.")
         }
+        guard let field = try inputField(for: focusedField) else {
+            return .init(pid: pid, target: nil)
+        }
+        AXUIElementSetMessagingTimeout(field, 0.1)
         var role: CFTypeRef?
         let roleStatus = AXUIElementCopyAttributeValue(field, kAXRoleAttribute as CFString, &role)
         guard roleStatus == .success else {
@@ -60,6 +63,58 @@ struct DirectFocus {
         }
         return .init(pid: pid, target: DirectFocus(pid: pid, field: field, window: try element(field, kAXWindowAttribute),
                                                  commands: valueWritable.boolValue ? .keyBindings : .controlCharacters))
+    }
+
+    /// aria-activedescendant gives AX focus to a suggestion while the editor keeps keyboard focus.
+    /// Resolve the editor through its explicit aria-controls / AXLinkedUIElements relationship.
+    static func inputField(for focused: AXUIElement,
+                           read: (AXUIElement, String) throws -> CFTypeRef? = readAttribute) throws -> AXUIElement? {
+        func isText(_ element: AXUIElement) throws -> Bool {
+            let role = try read(element, kAXRoleAttribute) as? String
+            return [kAXTextAreaRole, kAXTextFieldRole, kAXComboBoxRole].contains(role ?? "")
+        }
+        if try isText(focused) { return focused }
+
+        var ancestors: [AXUIElement] = [], node: AXUIElement? = focused
+        while let current = node, !ancestors.contains(where: { CFEqual($0, current) }) {
+            ancestors.append(current)
+            let role = try read(current, kAXRoleAttribute) as? String
+            if role == "AXWebArea" || role == kAXWindowRole { break }
+            node = try read(current, kAXParentAttribute) as! AXUIElement?
+        }
+        // Ordinary menus and other non-text controls do not own a web autocomplete editor.
+        guard try ancestors.contains(where: { try read($0, kAXRoleAttribute) as? String == kAXListRole }),
+              try ancestors.contains(where: { try read($0, kAXRoleAttribute) as? String == "AXWebArea" }) else { return nil }
+        var visited: [AXUIElement] = []
+        func editor(in element: AXUIElement) throws -> AXUIElement? {
+            guard !visited.contains(where: { CFEqual($0, element) }) else { return nil }
+            visited.append(element)
+            if try isText(element),
+               let linked = try read(element, kAXLinkedUIElementsAttribute) as? [AXUIElement],
+               linked.contains(where: { link in ancestors.contains { CFEqual($0, link) } }),
+               try read(element, kAXSelectedTextRangeAttribute) != nil {
+                return element
+            }
+            for child in try read(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
+                if let result = try editor(in: child) { return result }
+            }
+            return nil
+        }
+        for ancestor in ancestors {
+            if let result = try editor(in: ancestor) { return result }
+        }
+        return nil
+    }
+
+    private static func readAttribute(_ element: AXUIElement, _ name: String) throws -> CFTypeRef? {
+        AXUIElementSetMessagingTimeout(element, 0.1)
+        var value: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(element, name as CFString, &value)
+        if status == .attributeUnsupported || status == .noValue { return nil }
+        guard status == .success else {
+            throw RouteError(detail: "Reading autocomplete input \(name) failed (AX \(status.rawValue)).")
+        }
+        return value
     }
 
     func validate() throws -> Bool {

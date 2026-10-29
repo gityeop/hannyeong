@@ -157,7 +157,6 @@ private struct BackfillQA {
         disabled.session.toggleLanguage()
         try expect(disabled, "새 해 home 안녕\ndkssud", "manualToggleWorksWhenDisabled")
         disabled.session.toggleLanguage()
-        await disabled.session.finishLearning()
         try expect(disabled, "새 해 home 안녕\n안녕", "manualToggleRestoresWhenDisabled")
 
         defaults.set(true, forKey: PriorWordCorrectionSettings.enabledKey)
@@ -233,7 +232,6 @@ private struct BackfillQA {
         try expect(paragraphs, paragraphPrefix + "to go ㅙㅡㄷ ", "paragraphCoordinateToggle")
         paragraphs.session.toggleLanguage()
         try expect(paragraphs, paragraphPrefix + "to go home ", "paragraphCoordinateToggleBack")
-        await paragraphs.session.finishLearning()
 
         // Space-separated words, including fast typing while inference is pending.
         let cases: [(String, String, String)] = [
@@ -314,7 +312,6 @@ private struct BackfillQA {
         try expect(held, "to go ㅙㅡㄷ ", "toggleAnchor")
         held.session.toggleLanguage()
         try expect(held, "to go home ", "toggleAnchorBack")
-        await held.session.finishLearning()
 
         let entered = Fixture(prefix: "", store: store, local: local)
         entered.view.commitsOnlyMarkedText = true

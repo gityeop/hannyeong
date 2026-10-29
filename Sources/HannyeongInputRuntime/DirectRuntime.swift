@@ -8,7 +8,6 @@ actor DirectRuntime {
     private let correctionsURL: URL
     private let frequencies: WordFrequencies
     private let reloadCorrections: Bool
-    private var toggle: (wordID: UUID, raw: String, before: String, preferred: String, prior: CorrectionExample?)?
 
     init(resources: URL, personalDirectory: URL, memory: CorrectionMemory) throws {
         let saved = try JSONDecoder().decode(LocalRuntimeConfiguration.self,
@@ -64,7 +63,6 @@ actor DirectRuntime {
     }
 
     func correct(_ target: DirectSession.FeedbackTarget, preferred: String) async throws {
-        toggle = nil
         if reloadCorrections { try reloadMemory() }
         var updated = memory
         try updated.record(raw: target.raw, before: target.before, rejected: target.text, preferred: preferred, scope: .context)
@@ -75,43 +73,10 @@ actor DirectRuntime {
         _ = try await client.correct(raw: target.raw, before: target.before, candidates: candidates, preferred: preferred, scope: .context)
     }
 
-    /// Preserve the original input method's odd/even single-tap learning semantics.
-    func rememberToggle(_ target: DirectSession.FeedbackTarget, preferred: String) async throws {
-        try reloadMemory()
-        let candidates = try CandidateBuilder.candidates(for: target.raw, includeSplits: true)
-        if let previous = toggle, previous.wordID == target.wordID, previous.raw == target.raw, previous.before == target.before,
-           previous.preferred == target.text {
-            if let entry = memory.entries.last(where: { $0.raw == target.raw && $0.scope == .always }) {
-                try memory.remove(entry)
-            }
-            if let prior = previous.prior {
-                try memory.record(raw: prior.raw, before: prior.before, rejected: prior.rejected, preferred: prior.preferred, scope: .always)
-            }
-            try saveMemory()
-            toggle = nil
-            if let prior = previous.prior {
-                _ = try await client.correct(raw: prior.raw, before: prior.before, candidates: candidates, preferred: prior.preferred, scope: .always)
-            } else {
-                _ = try await client.forget(raw: target.raw, before: target.before, preferred: target.text, scope: .always)
-            }
-        } else {
-            let prior = memory.entries.last(where: { $0.raw == target.raw && $0.scope == .always })
-            try memory.record(raw: target.raw, before: target.before, rejected: target.text, preferred: preferred, scope: .always)
-            try saveMemory()
-            toggle = (target.wordID, target.raw, target.before, preferred, prior)
-            _ = try await client.correct(raw: target.raw, before: target.before, candidates: candidates, preferred: preferred, scope: .always)
-        }
-    }
-
     private func reloadMemory() throws {
         if FileManager.default.fileExists(atPath: correctionsURL.path) {
             memory = try JSONDecoder().decode(CorrectionMemory.self, from: Data(contentsOf: correctionsURL))
         }
-    }
-
-    private func saveMemory() throws {
-        try JSONEncoder().encode(memory).write(to: correctionsURL, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: correctionsURL.path)
     }
 
     static func installed(resources: URL) throws -> DirectRuntime {

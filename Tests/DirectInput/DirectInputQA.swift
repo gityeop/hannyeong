@@ -78,7 +78,6 @@ private final class Harness {
     var feedback: [String] = []
     var feedbackShowCount = 0
     var feedbackBounds = CGRect.zero
-    var toggles: [(DirectSession.FeedbackTarget, String)] = []
     var corrections: [(DirectSession.FeedbackTarget, String)] = []
     let focusChecks = FocusChecks()
     var focusValid: Bool {
@@ -102,7 +101,6 @@ private final class Harness {
         if let number = Int(text), (1...9).contains(number) { input.chooseFeedback(number - 1); return true }
         return false
     }, correct: { [self] target, preferred in await MainActor.run { corrections.append((target, preferred)) } },
-    toggled: { [self] in toggles.append(($0, $1)) },
     sourceID: nativeMode ? "com.yeop.inputmethod.Hannyeong" : DirectInputSource.direct, managesInputSource: !nativeMode)
 
     func decision(_ request: DirectSession.Snapshot) async throws -> DirectSession.Decision {
@@ -277,6 +275,7 @@ struct DirectInputQA {
     }
 
     @MainActor static func run() async throws {
+        try autocompleteFocusChecks()
         do {
             let h = Harness(); h.input.enableForQA(); h.input.beginRouteCheck(); h.type("rmflrh")
             let field = AXUIElementCreateApplication(h.pid)
@@ -571,13 +570,13 @@ struct DirectInputQA {
             try require(h.text == "so", "A Command shortcut also switched the word")
             try await h.resolve("s"); h.flushWake(); h.input.reset()
         }
-        do {
-            let h = Harness(); h.input.enableForQA(); h.type("so")
+        for native in [false, true] {
+            let h = Harness(nativeMode: native); h.input.enableForQA(); h.type("so")
             h.modifier(down: true, time: 1_000_000_000)
             h.modifier(down: false, time: 1_050_000_000)
             try await Task.sleep(for: .milliseconds(300)); h.flushWake()
             try require(h.text == "내" && h.feedbackShowCount == 0, "The real single-tap timer failed or opened candidates")
-            try require(h.toggles.count == 1 && h.toggles[0].1 == "내", "A single Command tap did not reach learning")
+            try require(h.corrections.isEmpty, "A single Command tap saved a correction")
             try await h.resolve("s"); h.flushWake(); h.input.reset()
         }
         do {
@@ -593,7 +592,7 @@ struct DirectInputQA {
             let h = Harness(); h.input.enableForQA(); h.type("so")
             h.modifier(down: true, time: 1_000_000_000)
             h.modifier(down: false, time: 1_050_000_000)
-            try require(h.text == "so", "The first tap changed the text before double-tap detection")
+            try require(h.text == "so" && h.corrections.isEmpty, "The first tap changed or saved the text before double-tap detection")
             h.key("s")
             try require(h.text == (try HangulComposer.compose("sos")), "Typing waited for the double-tap interval or lost the single toggle")
             try await h.resolve("s"); h.flushWake(); h.input.reset()
@@ -933,17 +932,6 @@ struct DirectInputQA {
         try require(decision == .live(try .init(text: "내", raw: "so")), "The runtime ignored the new contextual correction")
         print("PASS contextual correction: temporary private memory, permissions, model update and subsequent decision")
 
-        let firstToggle = DirectSession.FeedbackTarget(revision: 1, raw: "so", before: "native toggle ", text: "so", separator: "")
-        try await runtime.rememberToggle(firstToggle, preferred: "내")
-        var toggledMemory = try JSONDecoder().decode(CorrectionMemory.self, from: Data(contentsOf: correctionsURL))
-        try require(toggledMemory.entries.contains { $0.raw == "so" && $0.preferred == "내" && $0.scope == .always }, "Native single-tap learning was lost")
-        let secondToggle = DirectSession.FeedbackTarget(revision: 2, raw: "so", before: "native toggle ", text: "내", separator: "", wordID: firstToggle.wordID)
-        try await runtime.rememberToggle(secondToggle, preferred: "so")
-        toggledMemory = try JSONDecoder().decode(CorrectionMemory.self, from: Data(contentsOf: correctionsURL))
-        try require(!toggledMemory.entries.contains { $0.raw == "so" && $0.scope == .always }, "An even native tap did not undo its learned override")
-        try require(toggledMemory.entries.contains { $0.raw == "so" && $0.scope == .context }, "Undoing a native toggle removed contextual corrections")
-        print("PASS native single-tap learning and even-tap undo with existing contextual records preserved (temporary data only)")
-
         // The integrated mode and the settings browser use the very same store and worker.
         let store = CorrectionStore(url: correctionsURL)
         let integrated = DirectRuntime(client: runtime.client,
@@ -963,6 +951,43 @@ struct DirectInputQA {
         try require(removed == .live(try .init(text: "chrome", raw: "chrome")), "Deleting a shared correction left a cached forced reading")
         print("PASS shared correction management: learning visible, scope change applied, deletion removes memory and personal adjustment")
     }
+    static func autocompleteFocusChecks() throws {
+        let nodes = (0..<7).map { AXUIElementCreateApplication(pid_t(20000 + $0)) }
+        let (option, list, popup, editor, unrelated, web, window) =
+            (nodes[0], nodes[1], nodes[2], nodes[3], nodes[4], nodes[5], nodes[6])
+        var selection = CFRange(location: 0, length: 0)
+        let range = AXValueCreate(.cfRange, &selection)!
+        var attributes: [CFHashCode: [String: CFTypeRef]] = [:]
+        func set(_ node: AXUIElement, _ values: [String: CFTypeRef]) { attributes[CFHash(node)] = values }
+        set(option, [kAXRoleAttribute: "AXStaticText" as CFString, kAXParentAttribute: list])
+        set(list, [kAXRoleAttribute: "AXList" as CFString, kAXParentAttribute: popup, kAXChildrenAttribute: [option] as CFArray])
+        set(popup, [kAXRoleAttribute: "AXGroup" as CFString, kAXParentAttribute: web,
+                    kAXChildrenAttribute: [unrelated, editor, list] as CFArray])
+        set(editor, [kAXRoleAttribute: kAXComboBoxRole as CFString,
+                     kAXLinkedUIElementsAttribute: [list] as CFArray, kAXSelectedTextRangeAttribute: range])
+        set(unrelated, [kAXRoleAttribute: kAXTextFieldRole as CFString, kAXSelectedTextRangeAttribute: range])
+        set(web, [kAXRoleAttribute: "AXWebArea" as CFString, kAXParentAttribute: window, kAXChildrenAttribute: [popup] as CFArray])
+        set(window, [kAXRoleAttribute: kAXWindowRole as CFString])
+        func read(_ node: AXUIElement, _ key: String) throws -> CFTypeRef? { attributes[CFHash(node)]?[key] }
+        let resolved = try DirectFocus.inputField(for: option, read: read)
+        try require(resolved.map { CFEqual($0, editor) } == true,
+                    "An active autocomplete suggestion did not resolve to its controlling editor")
+        try require(try DirectFocus.inputField(for: unrelated, read: read).map { CFEqual($0, unrelated) } == true,
+                    "An ordinary text field changed identity")
+        attributes[CFHash(editor)]?.removeValue(forKey: kAXLinkedUIElementsAttribute)
+        try require(try DirectFocus.inputField(for: option, read: read) == nil,
+                    "An unrelated text field was treated as the autocomplete editor")
+        attributes[CFHash(editor)]?[kAXLinkedUIElementsAttribute] = [list] as CFArray
+        attributes[CFHash(editor)]?.removeValue(forKey: kAXSelectedTextRangeAttribute)
+        try require(try DirectFocus.inputField(for: option, read: read) == nil,
+                    "A non-editable combobox was treated as a text editor")
+        do {
+            _ = try DirectFocus.inputField(for: option, read: { _, _ in throw DirectFocus.RouteError(detail: "QA AX communication failure") })
+            throw DirectFailure(detail: "Autocomplete AX errors were silently ignored")
+        } catch is DirectFocus.RouteError {}
+        print("PASS autocomplete suggestion focus resolves only to its explicitly linked editable input; AX failures propagate")
+    }
+
     static func apply(_ edit: DirectSession.Edit, to host: inout String) {
         precondition(edit.deleteCount <= host.count)
         host.removeLast(edit.deleteCount)

@@ -62,7 +62,6 @@ private struct TerminalShortcutQA {
             session.toggleLanguage()
             try require(view.string == before && sessionErrors as! [String] == ["방금 입력한 단어를 바꾸지 못했습니다. 입력 위치를 확인해 주세요."],
                         "Moved caret was edited or its Korean notice was not shown")
-            await session.finishLearning()
             try require(sessionErrors.count == 1, "Personal update failed: \(sessionErrors)")
         }
     }

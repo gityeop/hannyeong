@@ -11,7 +11,6 @@ public final class TypingEngine {
     private var input: DirectInputTap!
     private var routeMonitor: InputRouteMonitor!
     private var panel: FeedbackPanel?
-    private var learning: Task<Void, Never>?
     private var previewGeneration = 0
     public var onPreview: ((String, String) -> Void)?
     public var enabled: Bool { input.enabled }
@@ -44,15 +43,7 @@ public final class TypingEngine {
             feedbackCommand: { [weak self] code, text in self?.panel?.handle(code: code, text: text) == true },
             feedbackContains: { [weak self] in self?.panel?.contains($0) == true },
             correct: { try await runtime.correct($0, preferred: $1) },
-            toggled: { [weak self] target, preferred in
-                guard let self else { return }
-                let previous = self.learning
-                self.learning = Task {
-                    await previous?.value
-                    do { try await runtime.rememberToggle(target, preferred: preferred) }
-                    catch { failure(error) }
-                }
-            }, previewChanged: { [weak self] raw, displayed in
+            previewChanged: { [weak self] raw, displayed in
                 guard let self, let preview = self.onPreview else { return }
                 self.previewGeneration += 1
                 let generation = self.previewGeneration
