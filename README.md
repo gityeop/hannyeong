@@ -2,6 +2,14 @@
 
 **한녕**은 ‘한영키 이제는 안녕’를 줄인 말로 Mac에서 두벌식 키를 그대로 치면 문맥에 따라 한글·영어·혼합어로 자동 확정하는 InputMethodKit 입력기입니다. 판별은 앱에 들어 있는 로컬 모델이 이 Mac 안에서 합니다.
 
+<!-- gitreels:start -->
+<p align="center">
+  <a href="https://gitreels.com/gityeop/hannyeong"><img src="https://gitreels.com/gityeop/hannyeong.webp" alt="gityeop/hannyeong in 15 seconds" width="100%"></a>
+  <br>
+  <a href="https://gitreels.com"><img src="https://gitreels.com/badge.svg" alt="Made with GitReels" height="24"></a>
+</p>
+<!-- gitreels:end -->
+
 ## 설치
 
 [Releases](https://github.com/gityeop/hannyeong/releases/latest)에서 `Hannyeong-<버전>-arm64.pkg`를 내려받아 엽니다. 설치 프로그램은 Apple 공증을 받았고, 관리자 암호 없이 이 사용자 계정의 `~/Library/Input Methods`에 설치합니다.
