@@ -15,6 +15,16 @@ private final class FocusChecks: @unchecked Sendable {
     private var isText = true
     private var captures = 0
     private var routeError = false
+    private var windowPresent = true
+    private var remoteSheet = false
+    var usesRemoteSheet: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return remoteSheet }
+        set { lock.lock(); defer { lock.unlock() }; remoteSheet = newValue }
+    }
+    var hasWindow: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return windowPresent }
+        set { lock.lock(); defer { lock.unlock() }; windowPresent = newValue }
+    }
     var failsAX: Bool {
         get { lock.lock(); defer { lock.unlock() }; return routeError }
         set { lock.lock(); defer { lock.unlock() }; routeError = newValue }
@@ -45,7 +55,13 @@ private final class FocusChecks: @unchecked Sendable {
         guard text else { return nil }
         if failed { throw DirectFocus.RouteError(detail: "QA AX communication failure") }
         let element = AXUIElementCreateApplication(pid)
-        return DirectFocus(pid: pid, field: element, window: element, commands: .keyBindings)
+        var focus = DirectFocus(pid: usesRemoteSheet ? pid + 1 : pid, field: element,
+                                window: hasWindow ? element : nil, commands: .keyBindings)
+        if usesRemoteSheet {
+            focus.sheet = AXUIElementCreateApplication(pid + 2)
+            focus.keyboardTargets = [Int64(pid)]
+        }
+        return focus
     }
     func caretBounds() -> CGRect {
         lock.lock(); onMain = onMain || Thread.isMainThread; lock.unlock()
@@ -76,6 +92,8 @@ private final class Harness {
     var hostEditable = true
     var deliveredPhysical: [String] = []
     var outputEventCount = 0
+    var nativeSheetReplacements = 0
+    var failsNativeSheetReplacement = false
     var feedback: [String] = []
     var feedbackShowCount = 0
     var feedbackBounds = CGRect.zero
@@ -103,6 +121,14 @@ private final class Harness {
         return false
     }, correct: { [self] target, preferred in await MainActor.run { corrections.append((target, preferred)) } },
     sourceID: nativeMode ? "com.yeop.inputmethod.Hannyeong" : DirectInputSource.direct, managesInputSource: !nativeMode,
+    replaceNativeSheet: nativeMode ? { [self] expected, replacement in
+        if failsNativeSheetReplacement { throw DirectFailure(detail: "QA native save-field replacement failed") }
+        try require(text.hasSuffix(expected), "The native save-field replacement lost its owned suffix")
+        text.removeLast(expected.count)
+        text += replacement
+        nativeSheetReplacements += 1
+        mutations.append(text)
+    } : nil,
     refreshRoute: { [self] in routeRefreshes += 1 })
 
     func decision(_ request: DirectSession.Snapshot) async throws -> DirectSession.Decision {
@@ -277,6 +303,7 @@ struct DirectInputQA {
     }
 
     @MainActor static func run() async throws {
+        try await savePanelFocusChecks()
         try autocompleteFocusChecks()
         do {
             let h = Harness(); h.input.enableForQA(); h.input.beginRouteCheck(); h.type("rmflrh")
@@ -994,6 +1021,111 @@ struct DirectInputQA {
         try require(removed == .live(try .init(text: "chrome", raw: "chrome")), "Deleting a shared correction left a cached forced reading")
         print("PASS shared correction management: learning visible, scope change applied, deletion removes memory and personal adjustment")
     }
+    @MainActor static func savePanelFocusChecks() async throws {
+        let field = AXUIElementCreateApplication(21001)
+        let otherField = AXUIElementCreateApplication(21002)
+        let window = AXUIElementCreateApplication(21003)
+        let otherWindow = AXUIElementCreateApplication(21004)
+        let missing = try DirectFocus.inputWindow(for: field, read: { _, name in
+            precondition(name == kAXWindowAttribute)
+            return (.noValue, nil)
+        })
+        let filename = DirectFocus(pid: 2764, field: field, window: missing, commands: .keyBindings)
+        try require(filename.matches(.init(pid: 2764, field: field, window: nil, commands: .keyBindings)),
+                    "A save filename field without AXWindow could not retain its route")
+        try require(!filename.matches(.init(pid: 2764, field: otherField, window: nil, commands: .keyBindings)),
+                    "A missing AXWindow allowed a correction to cross input fields")
+        try require(!filename.matches(.init(pid: 2765, field: field, window: nil, commands: .keyBindings)),
+                    "A missing AXWindow allowed a correction to cross processes")
+        let present = try DirectFocus.inputWindow(for: field, read: { _, _ in (.success, window) })
+        let ordinary = DirectFocus(pid: 2764, field: field, window: present, commands: .keyBindings)
+        try require(!filename.matches(ordinary), "A window identity change retained an old route")
+        try require(ordinary.matches(.init(pid: 2764, field: field, window: window, commands: .keyBindings)),
+                    "An ordinary window lost its existing route identity")
+        try require(!ordinary.matches(.init(pid: 2764, field: field, window: otherWindow, commands: .keyBindings)),
+                    "A correction crossed window identities")
+        for status in [AXError.cannotComplete, .attributeUnsupported] {
+            do {
+                _ = try DirectFocus.inputWindow(for: field, read: { _, _ in (status, nil) })
+                throw DirectFailure(detail: "A real AX failure was treated as an absent window")
+            } catch is DirectFocus.RouteError {}
+        }
+        do {
+            _ = try DirectFocus.inputWindow(for: field, read: { _, _ in (.success, "invalid" as CFString) })
+            throw DirectFailure(detail: "A malformed AXWindow was accepted as a route")
+        } catch is DirectFocus.RouteError {}
+        let group = AXUIElementCreateApplication(21005)
+        let sheet = AXUIElementCreateApplication(21006)
+        let roles = [CFHash(field): kAXTextFieldRole, CFHash(group): kAXSplitGroupRole, CFHash(sheet): kAXSheetRole,
+                     CFHash(window): kAXWindowRole]
+        let parents = [CFHash(field): group, CFHash(group): sheet, CFHash(sheet): window]
+        let containingSheet = try DirectFocus.inputSheet(for: field, read: { node, name in
+            if name == kAXRoleAttribute { return roles[CFHash(node)]! as CFString }
+            return parents[CFHash(node)]
+        })
+        try require(containingSheet.map { CFEqual($0, sheet) } == true,
+                    "The observed filename/split-group/sheet hierarchy did not identify its sheet")
+        try require(try DirectFocus.inputSheet(for: window, read: { _, _ in kAXWindowRole as CFString }) == nil,
+                    "An ordinary window was classified as a hosted sheet")
+        var proxy = DirectFocus(pid: 715, field: field, window: nil, commands: .keyBindings)
+        proxy.sheet = sheet
+        proxy.keyboardTargets = [2764]
+        try require(proxy.acceptsKeyboardTarget(2764) && proxy.acceptsKeyboardTarget(715),
+                    "The host's sheet rejected its declared AppKit keyboard transport")
+        try require(!proxy.acceptsKeyboardTarget(9999) && !ordinary.acceptsKeyboardTarget(715),
+                    "A keyboard PID mismatch outside the declared sheet transport was accepted")
+        var changedSheet = proxy
+        changedSheet.sheet = otherWindow
+        try require(!proxy.matches(changedSheet), "A cached edit crossed hosted sheet identities")
+        do {
+            _ = try DirectFocus.inputSheet(for: field, read: { _, _ in throw DirectFocus.RouteError(detail: "QA AX failure") })
+            throw DirectFailure(detail: "A sheet inspection error was ignored")
+        } catch is DirectFocus.RouteError {}
+        for native in [false, true] { for remote in [false, true] {
+            let h = Harness(nativeMode: native)
+            h.focusChecks.hasWindow = false
+            h.focusChecks.usesRemoteSheet = remote
+            h.input.enableForQA()
+            let filenameField = AXUIElementCreateApplication(h.pid)
+            var filenameRoute = DirectFocus(pid: remote ? h.pid + 1 : h.pid, field: filenameField,
+                                            window: missing, commands: .keyBindings)
+            if remote {
+                filenameRoute.sheet = AXUIElementCreateApplication(h.pid + 2)
+                filenameRoute.keyboardTargets = [Int64(h.pid)]
+            }
+            h.input.updateRoute(filenameRoute, known: true)
+            h.type("s"); try await h.resolve("s"); h.flushWake()
+            h.type("o"); try await h.resolve("내"); h.flushWake()
+            try require(h.text == "내", "A filename route without AXWindow blocked automatic conversion")
+            let outputBeforeReversal = h.outputEventCount
+            h.rightTap()
+            try require(h.text == "so" && h.errors.isEmpty, "A filename route without AXWindow blocked right Command")
+            if native && remote {
+                try require(h.nativeSheetReplacements == 1 && h.outputEventCount == outputBeforeReversal,
+                            "The native save-field reversal still emitted character-selection events")
+                h.failsNativeSheetReplacement = true
+                h.rightTap(time: 2_000_000_000)
+                try require(h.errors.count == 1 && !h.input.enabled && h.text == "so" && h.outputEventCount == outputBeforeReversal,
+                            "A failed native replacement used another output path or changed the filename")
+            }
+            h.input.reset()
+        } }
+        do {
+            let h = Harness(nativeMode: true)
+            h.input.enableForQA()
+            let field = AXUIElementCreateApplication(h.pid)
+            var ordinarySheet = DirectFocus(pid: h.pid, field: field, window: nil, commands: .keyBindings)
+            ordinarySheet.sheet = AXUIElementCreateApplication(h.pid + 2)
+            ordinarySheet.keyboardTargets = [Int64(h.pid + 3)]
+            h.input.updateRoute(ordinarySheet, known: true)
+            h.type("so"); h.rightTap()
+            try require(h.text == "내" && h.nativeSheetReplacements == 0 && h.errors.isEmpty,
+                        "A normal app-owned sheet was sent to the AppKit save-field replacement")
+            h.input.reset(); try await h.resolve("s")
+        }
+        print("PASS save filename/hosted sheet: missing AXWindow, AppKit keyboard transport, automatic conversion/right Command, native reversal without selection events, ordinary sheets unchanged, foreign PID and changed field/window/sheet rejection, AX errors propagate")
+    }
+
     static func autocompleteFocusChecks() throws {
         let nodes = (0..<7).map { AXUIElementCreateApplication(pid_t(20000 + $0)) }
         let (option, list, popup, editor, unrelated, web, window) =

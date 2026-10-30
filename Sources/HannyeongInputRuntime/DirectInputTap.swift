@@ -25,6 +25,7 @@ final class DirectInputTap {
     private let previewChanged: (String, String) -> Void
     private let sourceID: String
     private let managesInputSource: Bool
+    private let replaceNativeSheet: ((String, String) throws -> Void)?
     private let latencyLogger: Logger
     private var lastRoutingState: String?
     private var observedFirstCommand = false
@@ -79,6 +80,7 @@ final class DirectInputTap {
          correct: @escaping (DirectSession.FeedbackTarget, String) async throws -> Void = { _, _ in },
          previewChanged: @escaping (String, String) -> Void = { _, _ in },
          sourceID: String = DirectInputSource.direct, managesInputSource: Bool = true,
+         replaceNativeSheet: ((String, String) throws -> Void)? = nil,
          invalidateRoute: @escaping () -> Void = {}, refreshRoute: @escaping () -> Void = {}) throws {
         keyboard = try KeyboardInput()
         self.decide = decide
@@ -99,6 +101,7 @@ final class DirectInputTap {
         self.previewChanged = previewChanged
         self.sourceID = sourceID
         self.managesInputSource = managesInputSource
+        self.replaceNativeSheet = replaceNativeSheet
         self.latencyLogger = Logger(subsystem: sourceID, category: "TypingLatency")
     }
 
@@ -315,7 +318,7 @@ final class DirectInputTap {
         if KeyboardInput.isSoftwareText(event, systemKeyboardPIDs: systemKeyboardPIDs) { state = "software-text" }
         else if IsSecureEventInputEnabled() { state = "secure-input" }
         else if event.getIntegerValueField(.eventTargetUnixProcessID) > 0,
-                let route = textRoute, event.getIntegerValueField(.eventTargetUnixProcessID) != Int64(route.pid) { state = "target-mismatch" }
+                let route = textRoute, !route.acceptsKeyboardTarget(event.getIntegerValueField(.eventTargetUnixProcessID)) { state = "target-mismatch" }
         else if textRoute == nil { state = "no-text-route" }
         else if !functionKeysHeld.isEmpty { state = "function-key-held" }
         else if passthroughWord { state = "unowned-word" }
@@ -323,7 +326,7 @@ final class DirectInputTap {
         else { state = "composing" }
         guard lastRoutingState != state else { return }
         lastRoutingState = state
-        latencyLogger.notice("Typing route state=\(state, privacy: .public) known=\(self.routeKnown) checking=\(self.routeChecking) sourcePID=\(event.getIntegerValueField(.eventSourceUnixProcessID)) targetPID=\(event.getIntegerValueField(.eventTargetUnixProcessID))")
+        latencyLogger.notice("Typing route state=\(state, privacy: .public) known=\(self.routeKnown) checking=\(self.routeChecking) sourcePID=\(event.getIntegerValueField(.eventSourceUnixProcessID)) targetPID=\(event.getIntegerValueField(.eventTargetUnixProcessID)) routePID=\(self.textRoute?.pid ?? 0) sheet=\(self.textRoute?.sheet != nil)")
     }
 
     func receive(_ proxy: CGEventTapProxy, _ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -383,7 +386,7 @@ final class DirectInputTap {
             return Unmanaged.passUnretained(event)
         }
         let targetPID = event.getIntegerValueField(.eventTargetUnixProcessID)
-        if type == .keyDown, targetPID > 0, let route = textRoute, targetPID != Int64(route.pid) {
+        if type == .keyDown, let route = textRoute, !route.acceptsKeyboardTarget(targetPID) {
             // A command panel may own the keyboard while AX still reports a text field behind it.
             updateRoute(nil, known: false)
             refreshRoute()
@@ -629,8 +632,19 @@ final class DirectInputTap {
         generation += 1
         ready = nil
         lastDecided = nil
+        let previous = session.feedbackTarget.map { $0.text + $0.separator }
         if let edit = try session.toggleLanguage() {
-            try emit(edit, proxy)
+            if !managesInputSource, let route = textRoute, route.sheet != nil, let routingEvent,
+               route.keyboardTargets.contains(routingEvent.getIntegerValueField(.eventTargetUnixProcessID)),
+               let replaceNativeSheet, edit.deleteCount > 0 {
+                guard let previous, previous.count >= edit.deleteCount else {
+                    throw DirectFailure(detail: "The save-field language reversal has no owned suffix.")
+                }
+                try replaceNativeSheet(String(previous.suffix(edit.deleteCount)), edit.text)
+                previewChanged(session.raw, session.displayed)
+            } else {
+                try emit(edit, proxy)
+            }
         }
         requestDecision()
     }

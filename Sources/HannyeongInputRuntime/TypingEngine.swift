@@ -22,13 +22,16 @@ public final class TypingEngine {
 
     public static func native(client: LocalDecisionClient, frequencies: WordFrequencies,
                               correctionsURL: URL, memory: CorrectionMemory,
+                              replaceNativeSheet: ((String, String) throws -> Void)? = nil,
                               failure: @escaping (Error) -> Void) throws -> TypingEngine {
         try TypingEngine(runtime: DirectRuntime(client: client, frequencies: frequencies, correctionsURL: correctionsURL, memory: memory),
-                         sourceID: "com.yeop.inputmethod.Hannyeong", native: true, changed: { _ in }, failure: failure)
+                         sourceID: "com.yeop.inputmethod.Hannyeong", native: true, changed: { _ in }, failure: failure,
+                         replaceNativeSheet: replaceNativeSheet)
     }
 
     private init(runtime: DirectRuntime, sourceID: String, native: Bool,
-                 changed: @escaping (Bool) -> Void, failure: @escaping (Error) -> Void) throws {
+                 changed: @escaping (Bool) -> Void, failure: @escaping (Error) -> Void,
+                 replaceNativeSheet: ((String, String) throws -> Void)? = nil) throws {
         self.runtime = runtime
         input = try DirectInputTap(decide: { try await runtime.decide($0) }, changed: changed, failure: failure,
             showFeedback: { [weak self] candidates, bounds in
@@ -51,7 +54,7 @@ public final class TypingEngine {
                     guard self?.previewGeneration == generation else { return }
                     preview(raw, displayed)
                 }
-            }, sourceID: sourceID, managesInputSource: !native,
+            }, sourceID: sourceID, managesInputSource: !native, replaceNativeSheet: replaceNativeSheet,
             invalidateRoute: { [weak self] in self?.routeMonitor?.invalidate() },
             refreshRoute: { [weak self] in self?.routeMonitor?.refresh() })
         routeMonitor = InputRouteMonitor(sourceID: sourceID, checking: { [weak self] in self?.input.beginRouteCheck() }) { [weak self] target, known, keyboardPIDs in

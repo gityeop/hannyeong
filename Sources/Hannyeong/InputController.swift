@@ -80,7 +80,7 @@ final class InputController: IMKInputController {
             session = nil
             directMode = direct
         }
-        NativeInputEngine.shared.activate(hostBundleID: client.bundleIdentifier())
+        NativeInputEngine.shared.activate(client: client)
         if direct {
             let layouts = TISCreateInputSourceList([kTISPropertyInputSourceID: "com.apple.keylayout.ABC"] as CFDictionary, true).takeRetainedValue() as! [TISInputSource]
             guard let abc = layouts.first, TISSetInputMethodKeyboardLayoutOverride(abc) == noErr else {

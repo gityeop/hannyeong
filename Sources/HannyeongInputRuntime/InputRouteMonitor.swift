@@ -177,7 +177,8 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
             // Search suggestions are destroyed on every edit. Only losing the owned
             // field or its window invalidates the keyboard route.
             guard let target = textTarget,
-                  CFEqual(element, target.field) || CFEqual(element, target.window) else { return }
+                  CFEqual(element, target.field) || target.window.map({ CFEqual(element, $0) }) == true ||
+                  target.sheet.map({ CFEqual(element, $0) }) == true else { return }
         }
         if name == kAXMenuOpenedNotification {
             menuDepth += 1
