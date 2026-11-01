@@ -9,6 +9,7 @@ import os
 final class InputController: IMKInputController {
     private var session: CompositionSession?
     private var directMode = false
+    private var notionOutput: NativeNotionOutput?
     private var isActiveController = false
     private var feedbackWindow: FeedbackPanel?
     private var alternatePreview: AlternatePreviewPanel?
@@ -80,6 +81,13 @@ final class InputController: IMKInputController {
             session = nil
             directMode = direct
         }
+        if direct, client.bundleIdentifier() == "notion.id", notionOutput == nil {
+            notionOutput = NativeNotionOutput(client: client)
+        }
+        if !direct, let output = notionOutput {
+            NativeInputEngine.shared.deactivateNotion(output)
+            notionOutput = nil
+        }
         NativeInputEngine.shared.activate(client: client)
         if direct {
             let layouts = TISCreateInputSourceList([kTISPropertyInputSourceID: "com.apple.keylayout.ABC"] as CFDictionary, true).takeRetainedValue() as! [TISInputSource]
@@ -110,6 +118,9 @@ final class InputController: IMKInputController {
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         if directMode {
+            if let event, event.type == .keyDown, let output = notionOutput {
+                return NativeInputEngine.shared.handleNotion(event, output: output)
+            }
             // An existing IMK client can keep its old modifier mask after the mode changes.
             return event?.type == .flagsChanged && event?.keyCode == 54 &&
                 (sender as? any IMKTextInput)?.bundleIdentifier() == "com.apple.Terminal"
@@ -196,6 +207,7 @@ final class InputController: IMKInputController {
 
     override func deactivateServer(_ sender: Any!) {
         isActiveController = false
+        if let output = notionOutput { NativeInputEngine.shared.deactivateNotion(output) }
         if directMode { NativeInputEngine.shared.recheckInputTarget() }
         rightCommand.cancel()
         closeFeedback()
@@ -206,6 +218,7 @@ final class InputController: IMKInputController {
 
     override func inputControllerWillClose() {
         isActiveController = false
+        if let output = notionOutput { NativeInputEngine.shared.deactivateNotion(output) }
         NotificationCenter.default.removeObserver(self)
         if directMode { NativeInputEngine.shared.recheckInputTarget() }
         shortcutLogger.notice("Input controller closing; id=\(String(describing: ObjectIdentifier(self)), privacy: .public)")

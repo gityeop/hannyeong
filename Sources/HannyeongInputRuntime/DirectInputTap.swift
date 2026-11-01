@@ -4,7 +4,7 @@ import Carbon
 import HannyeongCore
 import os
 
-/// Main-run-loop event owner. Model I/O is asynchronous; all output is emitted inside the tap.
+/// Main-run-loop key owner. Notion uses its IMK callback; other hosts emit inside the tap.
 final class DirectInputTap {
     private let decide: (DirectSession.Snapshot) async throws -> DirectSession.Decision
     private let changed: (Bool) -> Void
@@ -26,6 +26,9 @@ final class DirectInputTap {
     private let sourceID: String
     private let managesInputSource: Bool
     private let replaceNativeSheet: ((String, String) throws -> Void)?
+    private let replaceNativeText: ((Int, String) throws -> Void)?
+    private let resetNativeText: () -> Void
+    private let advanceNativeText: (String) -> Void
     private let latencyLogger: Logger
     private var lastRoutingState: String?
     private var observedFirstCommand = false
@@ -81,6 +84,9 @@ final class DirectInputTap {
          previewChanged: @escaping (String, String) -> Void = { _, _ in },
          sourceID: String = DirectInputSource.direct, managesInputSource: Bool = true,
          replaceNativeSheet: ((String, String) throws -> Void)? = nil,
+         replaceNativeText: ((Int, String) throws -> Void)? = nil,
+         resetNativeText: @escaping () -> Void = {},
+         advanceNativeText: @escaping (String) -> Void = { _ in },
          invalidateRoute: @escaping () -> Void = {}, refreshRoute: @escaping () -> Void = {}) throws {
         keyboard = try KeyboardInput()
         self.decide = decide
@@ -102,6 +108,9 @@ final class DirectInputTap {
         self.sourceID = sourceID
         self.managesInputSource = managesInputSource
         self.replaceNativeSheet = replaceNativeSheet
+        self.replaceNativeText = replaceNativeText
+        self.resetNativeText = resetNativeText
+        self.advanceNativeText = advanceNativeText
         self.latencyLogger = Logger(subsystem: sourceID, category: "TypingLatency")
     }
 
@@ -226,6 +235,7 @@ final class DirectInputTap {
         lastDecided = nil
         basicDecision = nil
         session.reset()
+        resetNativeText()
         focus = nil
         routingEvent = nil
         passthroughWord = false
@@ -329,7 +339,16 @@ final class DirectInputTap {
         latencyLogger.notice("Typing route state=\(state, privacy: .public) known=\(self.routeKnown) checking=\(self.routeChecking) sourcePID=\(event.getIntegerValueField(.eventSourceUnixProcessID)) targetPID=\(event.getIntegerValueField(.eventTargetUnixProcessID)) routePID=\(self.textRoute?.pid ?? 0) sheet=\(self.textRoute?.sheet != nil)")
     }
 
-    func receive(_ proxy: CGEventTapProxy, _ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
+    private var usesNativeText: Bool { !managesInputSource && textRoute?.hostBundleID == "notion.id" }
+
+    /// The actual IMK callback owns Notion keys, after its input client is active.
+    func receiveNative(_ event: CGEvent) -> Bool {
+        guard usesNativeText else { return false }
+        return receive(nil, event.type, event, nativeClient: true) == nil
+    }
+
+    func receive(_ proxy: CGEventTapProxy?, _ type: CGEventType, _ event: CGEvent,
+                 nativeClient: Bool = false) -> Unmanaged<CGEvent>? {
         let began = DispatchTime.now().uptimeNanoseconds
         defer {
             let elapsed = (DispatchTime.now().uptimeNanoseconds - began) / 1_000_000
@@ -344,14 +363,14 @@ final class DirectInputTap {
         let marker = event.getIntegerValueField(.eventSourceUserData)
         if marker == KeyboardOutput.outputMarker { return Unmanaged.passUnretained(event) }
         if marker == KeyboardOutput.wakeMarker {
-            if enabled, textRoute != nil, !routeChecking, functionKeysHeld.isEmpty {
-                do {
-                    if singleReady { singleReady = false; try applySingleTap(proxy) }
-                    try applyFeedbackReady(proxy)
-                    try applyReady(proxy)
+            if usesNativeText {
+                // IMK IPC must not run while the event tap holds the host's key queue.
+                let epoch = generation
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.generation == epoch else { return }
+                    self.applyWake(nil)
                 }
-                catch { stop(error) }
-            }
+            } else { applyWake(proxy) }
             return nil
         }
         traceRouting(type, event)
@@ -369,6 +388,10 @@ final class DirectInputTap {
         }
         if type == .keyUp, consumed.remove(code) != nil { return nil }
         guard enabled else { return Unmanaged.passUnretained(event) }
+        if !nativeClient, usesNativeText, type == .keyDown,
+           textRoute!.acceptsKeyboardTarget(event.getIntegerValueField(.eventTargetUnixProcessID)) {
+            return Unmanaged.passUnretained(event)
+        }
         if type == .leftMouseUp || type == .rightMouseUp || type == .otherMouseUp {
             if feedbackProjections.isEmpty || !feedbackContains(event) { refreshRoute() }
             return Unmanaged.passUnretained(event)
@@ -402,9 +425,15 @@ final class DirectInputTap {
                         if letters {
                             try rememberRoute(event)
                             session.recordPassedLetters(text)
+                            if nativeClient { advanceNativeText(text) }
                         }
-                        else if !session.raw.isEmpty, !text.isEmpty { session.beginBoundary(text) }
-                        else if !text.isEmpty { session.recordSeparator(text) }
+                        else if !session.raw.isEmpty, !text.isEmpty {
+                            session.beginBoundary(text)
+                            if nativeClient { advanceNativeText(text) }
+                        } else if !text.isEmpty {
+                            session.recordSeparator(text)
+                            if nativeClient { advanceNativeText(text) }
+                        }
                     } catch { stop(error) }
                 }
             } else if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
@@ -505,8 +534,17 @@ final class DirectInputTap {
         }
     }
 
+    private func applyWake(_ proxy: CGEventTapProxy?) {
+        guard enabled, textRoute != nil, !routeChecking, functionKeysHeld.isEmpty else { return }
+        do {
+            if singleReady { singleReady = false; try applySingleTap(proxy) }
+            try applyFeedbackReady(proxy)
+            try applyReady(proxy)
+        } catch { stop(error) }
+    }
+
     /// Only locally composed letters/Delete are consumed. Boundaries reach the host immediately.
-    private func handle(_ event: CGEvent, _ proxy: CGEventTapProxy) throws -> Bool {
+    private func handle(_ event: CGEvent, _ proxy: CGEventTapProxy?) throws -> Bool {
         let code = event.getIntegerValueField(.keyboardEventKeycode)
         if code == 51, !session.raw.isEmpty {
             try emit(session.backspace(), proxy)
@@ -536,11 +574,16 @@ final class DirectInputTap {
         if !session.raw.isEmpty {
             try applyBasicDecision(proxy)
             session.beginBoundary(text)
+            if usesNativeText { advanceNativeText(text) }
             previewChanged("", "")
             requestDecision()
             return false
         }
-        if !text.isEmpty { session.recordSeparator(text); requestDecision() }
+        if !text.isEmpty {
+            session.recordSeparator(text)
+            if usesNativeText { advanceNativeText(text) }
+            requestDecision()
+        }
         return false
     }
 
@@ -549,10 +592,19 @@ final class DirectInputTap {
         routingEvent = routing
     }
 
-    private func emit(_ edit: DirectSession.Edit, _ proxy: CGEventTapProxy) throws {
-        // Build the entire batch before the first mutation. There is one transport and no retry.
+    private func emit(_ edit: DirectSession.Edit, _ proxy: CGEventTapProxy?) throws {
+        // Each host has one output transport. Errors never retry through a second path.
         guard let routingEvent else { throw DirectFailure(detail: "The output batch has no owned keyboard route.") }
         guard let textRoute else { throw DirectFailure(detail: "The output batch has no owned text field.") }
+        if usesNativeText {
+            if !edit.isEmpty {
+                guard let replaceNativeText else { throw DirectFailure(detail: "The Notion text transport is unavailable.") }
+                try replaceNativeText(edit.deleteUTF16Count, edit.text)
+            }
+            previewChanged(session.raw, session.displayed)
+            return
+        }
+        guard let proxy else { throw DirectFailure(detail: "Keyboard output requires an event-tap proxy.") }
         let events = try KeyboardOutput.events(for: edit, routingEvent: routingEvent, commands: textRoute.commands)
         for event in events { post(event, proxy) }
         previewChanged(session.raw, session.displayed)
@@ -616,7 +668,7 @@ final class DirectInputTap {
         singleReady = false
     }
 
-    private func applyBasicDecision(_ proxy: CGEventTapProxy) throws {
+    private func applyBasicDecision(_ proxy: CGEventTapProxy?) throws {
         guard !liveDetection else { return }
         try applyReady(proxy)
         guard let (request, projection) = basicDecision, session.snapshot == request,
@@ -625,7 +677,7 @@ final class DirectInputTap {
         try emit(edit, proxy)
     }
 
-    private func applySingleTap(_ proxy: CGEventTapProxy) throws {
+    private func applySingleTap(_ proxy: CGEventTapProxy?) throws {
         guard rightCommand.takeSingle() else { return }
         singleTimer?.cancel()
         singleReady = false
@@ -722,7 +774,7 @@ final class DirectInputTap {
         }
     }
 
-    private func applyFeedbackReady(_ proxy: CGEventTapProxy) throws {
+    private func applyFeedbackReady(_ proxy: CGEventTapProxy?) throws {
         guard let result = readyFeedback else { return }
         readyFeedback = nil
         switch result {
@@ -746,7 +798,7 @@ final class DirectInputTap {
         }
     }
 
-    private func applyReady(_ proxy: CGEventTapProxy) throws {
+    private func applyReady(_ proxy: CGEventTapProxy?) throws {
         guard !routeChecking else { return }
         guard let (request, text, target) = ready else { return }
         ready = nil

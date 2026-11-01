@@ -5,7 +5,7 @@ import HannyeongInputRuntime
 import HannyeongCore
 import os
 
-/// IMK supplies source identity. The shared tap is the sole owner of typed words.
+/// IMK supplies source identity and owns Notion keys; the shared tap owns other hosts.
 @MainActor
 final class NativeInputEngine: NSObject {
     static let shared = NativeInputEngine()
@@ -15,6 +15,7 @@ final class NativeInputEngine: NSObject {
     private var failed = false
     private var prepared = false
     private weak var inputClient: (any IMKTextInput)?
+    private weak var notionOutput: NativeNotionOutput?
     var experimentalEnabled: Bool { UserDefaults.standard.bool(forKey: CompositionPreviewSettings.liveEnabledKey) }
 
     func prepare() {
@@ -32,7 +33,13 @@ final class NativeInputEngine: NSObject {
                     try NativeSheetReplacement.replace(client: client, expected: expected, with: replacement)
                     let elapsed = (DispatchTime.now().uptimeNanoseconds - began) / 1_000_000
                     self.logger.notice("Native sheet language reversal; removedUTF16=\(expected.utf16.count) insertedUTF16=\(replacement.utf16.count) ms=\(elapsed)")
-                }) { [weak self] in self?.report($0) }
+                }, replaceNativeText: { [weak self] deletedUTF16, text in
+                    guard let output = self?.notionOutput else {
+                        throw NativeNotionOutput.Failure(errorDescription: "The active Notion controller is unavailable.")
+                    }
+                    try output.replace(deletingUTF16: deletedUTF16, with: text)
+                }, resetNativeText: { [weak self] in self?.notionOutput?.reset() },
+                advanceNativeText: { [weak self] in self?.notionOutput?.advance($0) }) { [weak self] in self?.report($0) }
             DistributedNotificationCenter.default().addObserver(self, selector: #selector(sourceChanged),
                 name: Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged),
@@ -49,6 +56,23 @@ final class NativeInputEngine: NSObject {
         inputClient = client
         configure()
         synchronizeSource()
+    }
+
+    func handleNotion(_ event: NSEvent, output: NativeNotionOutput) -> Bool {
+        guard let engine, engine.enabled, let keyboardEvent = event.cgEvent else { return false }
+        if notionOutput !== output {
+            engine.reset()
+            output.reset()
+            notionOutput = output
+            logger.notice("Notion controller bound for native keys; sourcePID=\(keyboardEvent.getIntegerValueField(.eventSourceUnixProcessID)) targetPID=\(keyboardEvent.getIntegerValueField(.eventTargetUnixProcessID))")
+        }
+        return engine.handleNative(keyboardEvent)
+    }
+
+    func deactivateNotion(_ output: NativeNotionOutput) {
+        guard notionOutput === output else { return }
+        engine?.reset()
+        notionOutput = nil
     }
 
     func reset() { engine?.reset() }
@@ -100,6 +124,9 @@ final class NativeInputEngine: NSObject {
         if let failure = error as? DirectFailure { logger.error("Native typing error: \(failure.detail, privacy: .public)") }
         else if let failure = error as? NativeSheetReplacement.Failure {
             logger.error("Native save-field replacement failed: \(failure.localizedDescription, privacy: .public)")
+        }
+        else if let failure = error as? NativeNotionOutput.Failure {
+            logger.error("Native Notion replacement failed: \(failure.localizedDescription, privacy: .public)")
         }
         else { logger.error("Native typing error: \(String(describing: error), privacy: .private)") }
         AppSupport.shared.showError("자동 입력 처리를 중단했습니다. 입력 소스를 다시 선택해 주세요.")

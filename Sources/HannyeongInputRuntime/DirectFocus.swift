@@ -15,6 +15,7 @@ struct DirectFocus {
     let commands: KeyboardOutput.Commands
     var sheet: AXUIElement?
     var keyboardTargets: Set<Int64> = []
+    var hostBundleID: String?
 
     struct Probe {
         let pid: pid_t?
@@ -68,6 +69,7 @@ struct DirectFocus {
         let window = try inputWindow(for: field)
         var target = DirectFocus(pid: pid, field: field, window: window,
                                  commands: valueWritable.boolValue ? .keyBindings : .controlCharacters)
+        target.hostBundleID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
         if window == nil, let sheet = try inputSheet(for: field) {
             target.sheet = sheet
             // AX represents the sheet under its host app, while AppKit sends keys

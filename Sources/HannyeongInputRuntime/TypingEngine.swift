@@ -1,7 +1,7 @@
 import AppKit
 import HannyeongCore
 
-/// The native input source and Direct use one nonblocking physical-key owner.
+/// Shared word/model state with one physical-key owner per host.
 @MainActor
 public final class TypingEngine {
     public static let directSourceID = "com.yeop.inputmethod.HannyeongDirectSource"
@@ -23,15 +23,22 @@ public final class TypingEngine {
     public static func native(client: LocalDecisionClient, frequencies: WordFrequencies,
                               correctionsURL: URL, memory: CorrectionMemory,
                               replaceNativeSheet: ((String, String) throws -> Void)? = nil,
+                              replaceNativeText: ((Int, String) throws -> Void)? = nil,
+                              resetNativeText: @escaping () -> Void = {},
+                              advanceNativeText: @escaping (String) -> Void = { _ in },
                               failure: @escaping (Error) -> Void) throws -> TypingEngine {
         try TypingEngine(runtime: DirectRuntime(client: client, frequencies: frequencies, correctionsURL: correctionsURL, memory: memory),
                          sourceID: "com.yeop.inputmethod.Hannyeong", native: true, changed: { _ in }, failure: failure,
-                         replaceNativeSheet: replaceNativeSheet)
+                         replaceNativeSheet: replaceNativeSheet, replaceNativeText: replaceNativeText,
+                         resetNativeText: resetNativeText, advanceNativeText: advanceNativeText)
     }
 
     private init(runtime: DirectRuntime, sourceID: String, native: Bool,
                  changed: @escaping (Bool) -> Void, failure: @escaping (Error) -> Void,
-                 replaceNativeSheet: ((String, String) throws -> Void)? = nil) throws {
+                 replaceNativeSheet: ((String, String) throws -> Void)? = nil,
+                 replaceNativeText: ((Int, String) throws -> Void)? = nil,
+                 resetNativeText: @escaping () -> Void = {},
+                 advanceNativeText: @escaping (String) -> Void = { _ in }) throws {
         self.runtime = runtime
         input = try DirectInputTap(decide: { try await runtime.decide($0) }, changed: changed, failure: failure,
             showFeedback: { [weak self] candidates, bounds in
@@ -55,6 +62,7 @@ public final class TypingEngine {
                     preview(raw, displayed)
                 }
             }, sourceID: sourceID, managesInputSource: !native, replaceNativeSheet: replaceNativeSheet,
+            replaceNativeText: replaceNativeText, resetNativeText: resetNativeText, advanceNativeText: advanceNativeText,
             invalidateRoute: { [weak self] in self?.routeMonitor?.invalidate() },
             refreshRoute: { [weak self] in self?.routeMonitor?.refresh() })
         routeMonitor = InputRouteMonitor(sourceID: sourceID, checking: { [weak self] in self?.input.beginRouteCheck() }) { [weak self] target, known, keyboardPIDs in
@@ -72,6 +80,7 @@ public final class TypingEngine {
     public func pause() throws { try input.pause() }
     public func close() throws { routeMonitor.stop(); try input.close() }
     public func reset() { input.reset() }
+    public func handleNative(_ event: CGEvent) -> Bool { input.receiveNative(event) }
     public func resumeAfterSecureInput() { routeMonitor.resume() }
     public func recheckInputTarget() { routeMonitor.refresh() }
     public func dismissCandidates() { input.dismissCandidates() }

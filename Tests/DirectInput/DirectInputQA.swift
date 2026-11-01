@@ -17,6 +17,7 @@ private final class FocusChecks: @unchecked Sendable {
     private var routeError = false
     private var windowPresent = true
     private var remoteSheet = false
+    var hostBundleID: String?
     var usesRemoteSheet: Bool {
         get { lock.lock(); defer { lock.unlock() }; return remoteSheet }
         set { lock.lock(); defer { lock.unlock() }; remoteSheet = newValue }
@@ -57,6 +58,7 @@ private final class FocusChecks: @unchecked Sendable {
         let element = AXUIElementCreateApplication(pid)
         var focus = DirectFocus(pid: usesRemoteSheet ? pid + 1 : pid, field: element,
                                 window: hasWindow ? element : nil, commands: .keyBindings)
+        focus.hostBundleID = hostBundleID
         if usesRemoteSheet {
             focus.sheet = AXUIElementCreateApplication(pid + 2)
             focus.keyboardTargets = [Int64(pid)]
@@ -92,6 +94,9 @@ private final class Harness {
     var hostEditable = true
     var deliveredPhysical: [String] = []
     var outputEventCount = 0
+    var inEventTap = false
+    var nativeReplacements = 0
+    var failNativeReplacement = false
     var nativeSheetReplacements = 0
     var failsNativeSheetReplacement = false
     var feedback: [String] = []
@@ -128,6 +133,14 @@ private final class Harness {
         text += replacement
         nativeSheetReplacements += 1
         mutations.append(text)
+    } : nil,
+    replaceNativeText: nativeMode ? { [self] count, replacement in
+        try require(!inEventTap, "Notion IPC ran while the event tap held the host queue")
+        if failNativeReplacement { throw DirectFailure(detail: "QA Notion replacement failed") }
+        let previous = text as NSString
+        try require(previous.length >= count, "Notion replacement exceeded the UTF16 suffix")
+        text = previous.substring(to: previous.length - count) + replacement
+        nativeReplacements += 1
     } : nil,
     refreshRoute: { [self] in routeRefreshes += 1 })
 
@@ -192,7 +205,12 @@ private final class Harness {
             }
             let began = CFAbsoluteTimeGetCurrent()
             input.observeCommand(event.type, event)
-            let delivered = input.receive(proxy, event.type, event) != nil
+            inEventTap = true
+            var delivered = input.receive(proxy, event.type, event) != nil
+            inEventTap = false
+            if delivered, down, nativeMode, focusChecks.hostBundleID == "notion.id" {
+                delivered = !input.receiveNative(event)
+            }
             keyDurations.append(CFAbsoluteTimeGetCurrent() - began)
             if delivered {
                 if down { deliveredPhysical.append(text) }
@@ -290,7 +308,9 @@ private final class Harness {
         while wakeCount > 0 {
             wakeCount -= 1
             let event = try! KeyboardOutput.wake()
+            inEventTap = true
             _ = input.receive(proxy, event.type, event)
+            inEventTap = false
         }
     }
 }
@@ -303,6 +323,7 @@ struct DirectInputQA {
     }
 
     @MainActor static func run() async throws {
+        try await notionNativeDeliveryChecks()
         try await savePanelFocusChecks()
         try autocompleteFocusChecks()
         do {
@@ -485,9 +506,9 @@ struct DirectInputQA {
         _ = try session.append("dkssud")
         let old = session.snapshot
         let edit = session.accept(try .init(text: "안녕", raw: "dkssud"), for: old)!
-        try require(edit == .init(deleteCount: 6, text: "안녕"), "ASCII-to-Hangul edit did not own exactly six characters")
+        try require(edit == .init(deleteCount: 6, text: "안녕", deleteUTF16Count: 6), "ASCII-to-Hangul edit did not own exactly six characters")
         let deletion = try session.backspace()
-        try require(session.displayed == "안녀" && deletion == .init(deleteCount: 1, text: "녀"), "Hangul Backspace used bytes or cells instead of characters")
+        try require(session.displayed == "안녀" && deletion == .init(deleteCount: 1, text: "녀", deleteUTF16Count: 1), "Hangul Backspace used bytes or cells instead of characters")
         _ = try session.append("d")
         try require(session.displayed == "안녕", "Korean decision did not carry to the next physical key")
         session.beginBoundary(" ")
@@ -513,7 +534,7 @@ struct DirectInputQA {
         for event in events.prefix(12) {
             try require(NSEvent(cgEvent: event)?.charactersIgnoringModifiers == "\u{F702}", "An editing command retained the original Unicode letter")
         }
-        let rawCommands = try KeyboardOutput.events(for: .init(deleteCount: 1, text: ""), routingEvent: route, commands: .controlCharacters)
+        let rawCommands = try KeyboardOutput.events(for: .init(deleteCount: 1, text: "", deleteUTF16Count: 1), routingEvent: route, commands: .controlCharacters)
         try require(rawCommands.map { NSEvent(cgEvent: $0)?.characters } == ["\u{02}", "\u{02}", "\u{04}", "\u{04}"], "Read-only text surfaces lost their terminal control characters")
         try require(rawCommands.allSatisfy { $0.getIntegerValueField(.eventTargetUnixProcessID) == 12345 && $0.getIntegerValueField(.eventTargetProcessSerialNumber) == 54321 }, "Terminal commands lost the captured route")
         print("PASS minimal suffix edits, Hangul deletion, retained language, stale result, and output event order")
@@ -1124,6 +1145,43 @@ struct DirectInputQA {
             h.input.reset(); try await h.resolve("s")
         }
         print("PASS save filename/hosted sheet: missing AXWindow, AppKit keyboard transport, automatic conversion/right Command, native reversal without selection events, ordinary sheets unchanged, foreign PID and changed field/window/sheet rejection, AX errors propagate")
+    }
+
+    @MainActor static func notionNativeDeliveryChecks() async throws {
+        let h = Harness(nativeMode: true)
+        h.focusChecks.hostBundleID = "notion.id"
+        h.input.enableForQA()
+        h.input.updateRoute(try h.focusChecks.capture(h.pid), known: true)
+        h.input.configure(live: true, fixedEnglish: false, backfill: true)
+        h.key("x")
+        try require(h.text == "ㅌ" && h.nativeReplacements == 1 && h.outputEventCount == 0,
+                    "The first Notion key did not use its actual IMK callback")
+        try await h.resolve("x"); h.flushWake()
+        await Task.yield()
+        try await Task.sleep(for: .milliseconds(5))
+        try require(h.text == "x", "An asynchronous Notion decision did not leave the tap before committing")
+        h.key("k")
+        try await h.resolve("타"); h.flushWake()
+        try await Task.sleep(for: .milliseconds(5))
+        try require(h.text == "타" && h.outputEventCount == 0, "Notion retained an intermediate letter")
+        h.key(" ")
+        h.key(".")
+        h.key("", code: 36)
+        try require(h.submitted.last == "타 ." && h.deliveredPhysical.suffix(3) == [" ", ".", ""],
+                    "Notion Space, punctuation or Return was intercepted")
+        try require(h.errors.isEmpty && h.input.enabled, "Notion typing stopped unexpectedly")
+        h.input.reset()
+        try await h.resolve("타")
+
+        let failed = Harness(nativeMode: true)
+        failed.focusChecks.hostBundleID = "notion.id"
+        failed.input.enableForQA()
+        failed.input.updateRoute(try failed.focusChecks.capture(failed.pid), known: true)
+        failed.failNativeReplacement = true
+        failed.key("x"); failed.key(" "); failed.key("", code: 36)
+        try require(failed.errors.count == 1 && !failed.input.enabled && failed.outputEventCount == 0 &&
+                    failed.submitted.last == "x ", "A failed Notion edit blocked Space/Return or tried another transport")
+        print("PASS Notion IMK ownership: no client IPC inside event tap, native first key and delayed decisions, no synthetic selection/text, Space/punctuation/Return pass once, error releases input")
     }
 
     static func autocompleteFocusChecks() throws {
