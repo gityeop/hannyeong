@@ -3,6 +3,17 @@
     <channel>
         <title>Hannyeong</title>
         <item>
+            <title>0.4.13</title>
+            <pubDate>Sun, 01 Nov 2026 22:23:07 +0900</pubDate>
+            <link>https://gityeop.github.io/hannyeong/</link>
+            <sparkle:version>173</sparkle:version>
+            <sparkle:shortVersionString>0.4.13</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.13/Hannyeong-0.4.13-arm64.zip" length="53470604" type="application/octet-stream" sparkle:edSignature="+MJHEq3uf+p35M6dIExJt8NevvXK+lDsngZPM0D6baF4S3AR9j/PH8Tw36jAFL5inN1VnZWZGltdvxxSrrUODg==" />
+            <description>&lt;p&gt;노션에서 한글 입력 중 글자가 중복되거나 누적되는 문제를 수정했습니다. 제목·본문 및 앱 전환 후 입력 안정성을 개선했습니다.&lt;/p&gt;</description>
+        </item>
+        <item>
             <title>0.4.12</title>
             <pubDate>Fri, 30 Oct 2026 10:57:35 +0900</pubDate>
             <link>https://gityeop.github.io/hannyeong/</link>
