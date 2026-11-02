@@ -79,6 +79,7 @@ private struct SetupError: LocalizedError {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var server: IMKServer?
     private let secureInputSource = SecureInputSource()
+    private let rightCommandSource = RightCommandSourceSelection(sourceID: sourceID)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         LegacyMigration.run()
@@ -96,6 +97,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         AppSupport.shared.prepareLaunch(arguments: CommandLine.arguments)
         secureInputSource.start()
+        rightCommandSource.start()
         AppUpdater.shared.start()
         Logger(subsystem: bundleID, category: "Lifecycle").notice("Input method server started")
     }
@@ -108,6 +110,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         secureInputSource.stop()
+        rightCommandSource.stop()
         NativeInputEngine.shared.close()
     }
 }
