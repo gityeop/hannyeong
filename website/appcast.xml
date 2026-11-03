@@ -3,6 +3,21 @@
     <channel>
         <title>Hannyeong</title>
         <item>
+            <title>0.4.15</title>
+            <pubDate>Tue, 03 Nov 2026 11:16:50 +0900</pubDate>
+            <link>https://gityeop.github.io/hannyeong/</link>
+            <sparkle:version>176</sparkle:version>
+            <sparkle:shortVersionString>0.4.15</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.15/Hannyeong-0.4.15-arm64.zip" length="53475693" type="application/octet-stream" sparkle:edSignature="ed4DHHErkr3lMlNaMdeas0MoGZNv3zGx+SGL25SM9czGSvhAdJMsGMUYUfeKzR+aT7viiiUELYF8HXvZ16VyAg==" />
+            <description>&lt;h2&gt;한녕 0.4.15&lt;/h2&gt;
+&lt;p&gt;도움말 메뉴의 검색창에서 한글 자동 변환이 작동하지 않던 문제를 수정했습니다.&lt;/p&gt;
+&lt;p&gt;메뉴 안의 검색 입력란에서도 한녕을 사용할 수 있습니다. 일반 메뉴 탐색 중에는 기존처럼 키 입력을 그대로 전달합니다.&lt;/p&gt;
+&lt;p&gt;기존 설정과 저장된 교정 기록은 유지됩니다.&lt;/p&gt;
+</description>
+        </item>
+        <item>
             <title>0.4.14</title>
             <pubDate>Mon, 02 Nov 2026 16:06:58 +0900</pubDate>
             <link>https://gityeop.github.io/hannyeong/</link>
