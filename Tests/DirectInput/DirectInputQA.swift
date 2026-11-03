@@ -318,7 +318,15 @@ private final class Harness {
 @main
 struct DirectInputQA {
     @MainActor static func main() async {
-        do { try await run(); print("PASS direct input QA (isolated events only; no event tap, posting, or input-source switch)") }
+        do {
+            if CommandLine.arguments.contains("--inspect-menu-focus") {
+                let focus = try DirectFocus.probe()
+                try require(focus.target?.isMenuInput == true, "The focused input is not a menu editor")
+                print("PASS live menu input focus; pid=\(focus.pid ?? 0) window=\(focus.target?.window != nil)")
+                return
+            }
+            try await run(); print("PASS direct input QA (isolated events only; no event tap, posting, or input-source switch)")
+        }
         catch { fputs("Direct input QA failed: \(error)\n", stderr); exit(1) }
     }
 
@@ -326,6 +334,7 @@ struct DirectInputQA {
         try await notionNativeDeliveryChecks()
         try await savePanelFocusChecks()
         try autocompleteFocusChecks()
+        try menuFocusChecks()
         do {
             let h = Harness(); h.input.enableForQA(); h.input.beginRouteCheck(); h.type("rmflrh")
             let field = AXUIElementCreateApplication(h.pid)
@@ -804,6 +813,29 @@ struct DirectInputQA {
         }
         print("PASS native/Direct source restoration clears a stale menu gate and resumes real composition/output")
 
+        for native in [false, true] {
+            let h = Harness(nativeMode: native); h.input.enableForQA()
+            h.input.configure(live: true, fixedEnglish: false, backfill: true)
+            let monitor = InputRouteMonitor(sourceID: "QA", checking: {}, changed: { _, _, _ in })
+            let field = AXUIElementCreateApplication(h.pid)
+            var search = DirectFocus(pid: h.pid, field: field, window: nil, commands: .keyBindings)
+            search.isMenuInput = true
+            monitor.menuOpenedForQA()
+            h.input.updateRoute(monitor.targetForQA(search), known: true)
+            h.type("dkssud")
+            try require(h.text == "안녕", "A focused menu search field passed Hangul keys through unchanged")
+            try await h.resolve("d"); try await h.resolve("안녕"); h.flushWake()
+            try require(h.text == "안녕" && h.errors.isEmpty && h.input.enabled,
+                        "Menu search conversion stopped after its model decision")
+            h.input.updateRoute(monitor.targetForQA(nil), known: true)
+            let count = h.outputEventCount
+            h.type("ka")
+            try require(h.text == "안녕ka" && h.outputEventCount == count,
+                        "Leaving the menu editor converted menu navigation keys")
+            h.input.reset()
+        }
+        print("PASS native/Direct menu search converts Hangul; ordinary menu navigation and the editor behind the menu stay blocked")
+
         for live in [false, true] {
             let h = Harness(nativeMode: true); h.input.enableForQA()
             h.input.configure(live: live, fixedEnglish: live ? nil : false, backfill: true)
@@ -1182,6 +1214,28 @@ struct DirectInputQA {
         try require(failed.errors.count == 1 && !failed.input.enabled && failed.outputEventCount == 0 &&
                     failed.submitted.last == "x ", "A failed Notion edit blocked Space/Return or tried another transport")
         print("PASS Notion IMK ownership: no client IPC inside event tap, native first key and delayed decisions, no synthetic selection/text, Space/punctuation/Return pass once, error releases input")
+    }
+
+    static func menuFocusChecks() throws {
+        let nodes = (0..<5).map { AXUIElementCreateApplication(pid_t(21000 + $0)) }
+        let (field, item, menu, window, app) = (nodes[0], nodes[1], nodes[2], nodes[3], nodes[4])
+        var attributes: [CFHashCode: [String: CFTypeRef]] = [
+            CFHash(field): [kAXRoleAttribute: kAXTextFieldRole as CFString, kAXParentAttribute: item],
+            CFHash(item): [kAXRoleAttribute: kAXMenuItemRole as CFString, kAXParentAttribute: menu],
+            CFHash(menu): [kAXRoleAttribute: kAXMenuRole as CFString, kAXParentAttribute: app],
+            CFHash(window): [kAXRoleAttribute: kAXWindowRole as CFString, kAXParentAttribute: app],
+            CFHash(app): [kAXRoleAttribute: kAXApplicationRole as CFString]
+        ]
+        func read(_ node: AXUIElement, _ name: String) throws -> CFTypeRef? { attributes[CFHash(node)]?[name] }
+        try require(try DirectFocus.inputIsInMenu(field, read: read), "Help search was not classified as a menu editor")
+        attributes[CFHash(field)]?[kAXParentAttribute] = window
+        try require(try !DirectFocus.inputIsInMenu(field, read: read), "A window editor was classified as a menu editor")
+        try require(try DirectFocus.inputField(for: item, read: read) == nil, "An ordinary menu item became an editor")
+        do {
+            _ = try DirectFocus.inputIsInMenu(field, read: { _, _ in throw DirectFocus.RouteError(detail: "QA AX failure") })
+            throw DirectFailure(detail: "Menu inspection swallowed an AX error")
+        } catch is DirectFocus.RouteError {}
+        print("PASS help-menu editor ancestry, underlying window exclusion, ordinary menu items, and AX error propagation")
     }
 
     static func autocompleteFocusChecks() throws {

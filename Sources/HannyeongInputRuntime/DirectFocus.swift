@@ -16,6 +16,7 @@ struct DirectFocus {
     var sheet: AXUIElement?
     var keyboardTargets: Set<Int64> = []
     var hostBundleID: String?
+    var isMenuInput = false
 
     struct Probe {
         let pid: pid_t?
@@ -70,6 +71,7 @@ struct DirectFocus {
         var target = DirectFocus(pid: pid, field: field, window: window,
                                  commands: valueWritable.boolValue ? .keyBindings : .controlCharacters)
         target.hostBundleID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+        target.isMenuInput = try inputIsInMenu(field)
         if window == nil, let sheet = try inputSheet(for: field) {
             target.sheet = sheet
             // AX represents the sheet under its host app, while AppKit sends keys
@@ -132,6 +134,20 @@ struct DirectFocus {
             throw RouteError(detail: "Reading autocomplete input \(name) failed (AX \(status.rawValue)).")
         }
         return value
+    }
+
+    static func inputIsInMenu(_ field: AXUIElement,
+                              read: (AXUIElement, String) throws -> CFTypeRef? = readAttribute) throws -> Bool {
+        var node: AXUIElement? = field
+        var visited: [AXUIElement] = []
+        while let current = node, !visited.contains(where: { CFEqual($0, current) }) {
+            visited.append(current)
+            let role = try read(current, kAXRoleAttribute) as? String
+            if role == kAXMenuRole { return true }
+            if role == kAXWindowRole || role == kAXApplicationRole { return false }
+            node = try read(current, kAXParentAttribute) as! AXUIElement?
+        }
+        return false
     }
 
     func validate() throws -> Bool {

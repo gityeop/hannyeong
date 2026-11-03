@@ -54,7 +54,8 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
     }
 
     private func eligibleTarget(_ target: DirectFocus?) -> DirectFocus? {
-        menuDepth > 0 ? nil : target
+        // A menu blocks the editor behind it, but can own a search editor itself.
+        menuDepth > 0 && target?.isMenuInput != true ? nil : target
     }
 
     #if DIRECT_INPUT_QA
@@ -187,6 +188,7 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
             generation += 1
             textTarget = nil
             changed(nil, true, systemKeyboardPIDs)
+            refresh()
         } else {
             if name == kAXMenuClosedNotification { menuDepth = max(0, menuDepth - 1) }
             refresh()
