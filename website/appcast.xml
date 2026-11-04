@@ -3,6 +3,20 @@
     <channel>
         <title>Hannyeong</title>
         <item>
+            <title>0.4.16</title>
+            <pubDate>Wed, 04 Nov 2026 13:46:12 +0900</pubDate>
+            <link>https://gityeop.github.io/hannyeong/</link>
+            <sparkle:version>177</sparkle:version>
+            <sparkle:shortVersionString>0.4.16</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.16/Hannyeong-0.4.16-arm64.zip" length="53445347" type="application/octet-stream" sparkle:edSignature="TTIr1TooxjXJQ418AdjGUNiyQpf6yfR9QJO3EVhCNBAuqfY5/XAHGIeAEN8egSlqJFux6chGiu7XP9vL/0osDg==" />
+            <description>&lt;h2&gt;한녕 0.4.16&lt;/h2&gt;
+&lt;p&gt;자동 입력 처리가 중단된 뒤 입력 소스를 다시 선택해도 복구되지 않던 문제를 수정했습니다.&lt;/p&gt;
+&lt;p&gt;다른 입력 소스를 선택한 뒤 한녕을 다시 선택하면 자동 입력 처리를 다시 시작합니다.&lt;/p&gt;
+</description>
+        </item>
+        <item>
             <title>0.4.15</title>
             <pubDate>Tue, 03 Nov 2026 11:16:50 +0900</pubDate>
             <link>https://gityeop.github.io/hannyeong/</link>

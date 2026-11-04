@@ -87,7 +87,11 @@ final class NativeInputEngine: NSObject {
     }
 
     @objc private func sourceChanged() {
-        DispatchQueue.main.async { [weak self] in self?.synchronizeSource() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.failed = false
+            self.synchronizeSource()
+        }
     }
     @objc private func preferencesChanged() {
         configure()
@@ -108,7 +112,11 @@ final class NativeInputEngine: NSObject {
             let selected = TypingEngine.currentSourceID
             if selected == sourceID && experimentalEnabled {
                 guard !failed else { return }
-                if !engine.enabled { try engine.start(); logger.notice("Native nonblocking typing enabled") }
+                if !engine.enabled {
+                    try engine.start()
+                    AppSupport.shared.clearError()
+                    logger.notice("Native nonblocking typing enabled")
+                }
             } else {
                 if engine.enabled {
                     try engine.pause()
