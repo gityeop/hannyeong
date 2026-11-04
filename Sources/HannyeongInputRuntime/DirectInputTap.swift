@@ -140,11 +140,11 @@ final class DirectInputTap {
               NSWorkspace.shared.runningApplications.allSatisfy({ $0.localizedName != "Catchtype" }) else {
             throw DirectFailure(detail: "Quit Catchtype before enabling Hannyeong Direct.")
         }
-        if let tap, !CGEvent.tapIsEnabled(tap: tap) {
-            throw DirectFailure(detail: "The keyboard tap is disabled. Quit and reopen Hannyeong Direct.")
+        if let tap {
+            try Self.resumeEventTap(tap, failure: "The keyboard tap could not be re-enabled.")
         }
-        if let commandTap, !CGEvent.tapIsEnabled(tap: commandTap) {
-            throw DirectFailure(detail: "The command-boundary observer is disabled. Restart the input method.")
+        if let commandTap {
+            try Self.resumeEventTap(commandTap, failure: "The command-boundary observer could not be re-enabled.")
         }
         if tap == nil {
             let types: [CGEventType] = [.null, .keyDown, .keyUp, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown,
@@ -197,6 +197,14 @@ final class DirectInputTap {
         observedFirstCommand = false
         functionKeysHeld.removeAll()
         changed(true)
+    }
+
+    static func resumeEventTap(_ tap: CFMachPort, failure: String,
+                               isEnabled: (CFMachPort) -> Bool = CGEvent.tapIsEnabled(tap:),
+                               enable: (CFMachPort, Bool) -> Void = CGEvent.tapEnable(tap:enable:)) throws {
+        guard !isEnabled(tap) else { return }
+        enable(tap, true)
+        guard isEnabled(tap) else { throw DirectFailure(detail: failure) }
     }
 
     func pause() throws {
@@ -276,7 +284,7 @@ final class DirectInputTap {
     func observeCommand(_ type: CGEventType, _ event: CGEvent) {
         guard enabled else { return }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            stop(DirectFailure(detail: "The system disabled the command-boundary observer. Restart the input method."))
+            stop(DirectFailure(detail: "The system disabled the command-boundary observer. Reselect the input source."))
             return
         }
         let marker = event.getIntegerValueField(.eventSourceUserData)
@@ -357,7 +365,7 @@ final class DirectInputTap {
             }
         }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            stop(DirectFailure(detail: "The system disabled the direct-input keyboard tap. Restart the prototype."))
+            stop(DirectFailure(detail: "The system disabled the direct-input keyboard tap. Reselect the input source."))
             return Unmanaged.passUnretained(event)
         }
         let marker = event.getIntegerValueField(.eventSourceUserData)

@@ -319,6 +319,10 @@ private final class Harness {
 struct DirectInputQA {
     @MainActor static func main() async {
         do {
+            if CommandLine.arguments.contains("--event-tap-recovery") {
+                try processEventTapRecoveryChecks()
+                return
+            }
             if CommandLine.arguments.contains("--inspect-menu-focus") {
                 let focus = try DirectFocus.probe()
                 try require(focus.target?.isMenuInput == true, "The focused input is not a menu editor")
@@ -331,6 +335,7 @@ struct DirectInputQA {
     }
 
     @MainActor static func run() async throws {
+        try await eventTapRecoveryChecks()
         try await notionNativeDeliveryChecks()
         try await savePanelFocusChecks()
         try autocompleteFocusChecks()
@@ -1074,6 +1079,74 @@ struct DirectInputQA {
         try require(removed == .live(try .init(text: "chrome", raw: "chrome")), "Deleting a shared correction left a cached forced reading")
         print("PASS shared correction management: learning visible, scope change applied, deletion removes memory and personal adjustment")
     }
+    @MainActor static func processEventTapRecoveryChecks() throws {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        for options in [CGEventTapOptions.defaultTap, .listenOnly] {
+            guard let tap = CGEvent.tapCreateForPid(pid: getpid(), place: .tailAppendEventTap, options: options,
+                eventsOfInterest: 1 << CGEventType.keyDown.rawValue,
+                callback: { _, _, event, _ in Unmanaged.passUnretained(event) }, userInfo: nil) else {
+                throw DirectFailure(detail: "QA could not create its process-local event tap (options=\(options.rawValue))")
+            }
+            defer { CFMachPortInvalidate(tap) }
+            for _ in 0..<2 {
+                CGEvent.tapEnable(tap: tap, enable: false)
+                try require(!CGEvent.tapIsEnabled(tap: tap), "QA did not disable its real event tap")
+                try DirectInputTap.resumeEventTap(tap, failure: "QA real event tap could not resume")
+                try require(CGEvent.tapIsEnabled(tap: tap), "The real event tap remained disabled after resumption")
+            }
+        }
+        print("PASS real process-local keyboard/observer CGEventTap disabled then resumed twice; no key posting or input-source switch")
+    }
+
+    @MainActor static func eventTapRecoveryChecks() async throws {
+        guard let port = CFMachPortCreate(kCFAllocatorDefault, { _, _, _, _ in }, nil, nil) else {
+            throw DirectFailure(detail: "QA could not create its isolated Mach port")
+        }
+        defer { CFMachPortInvalidate(port) }
+        for observer in [false, true] {
+            let h = Harness(nativeMode: true)
+            h.input.enableForQA()
+            let disabled = CGEvent(source: nil)!
+            disabled.type = .tapDisabledByTimeout
+            if observer { h.input.observeCommand(disabled.type, disabled) }
+            else { _ = h.input.receive(h.proxy, disabled.type, disabled) }
+            try require(!h.input.enabled && h.errors.count == 1,
+                        "A disabled tap did not stop typing and report the failure")
+            h.key("x")
+            try require(h.text == "x" && h.outputEventCount == 0, "Stopped typing consumed or rewrote a key")
+            h.text = ""
+
+            var enabled = false
+            var enables = 0
+            let resume = {
+                try DirectInputTap.resumeEventTap(port, failure: "QA tap cannot resume", isEnabled: { _ in enabled },
+                    enable: { _, value in enabled = value; enables += 1 })
+            }
+            try resume()
+            try require(enabled && enables == 1, "Reselecting the source did not re-enable the disabled tap")
+            try resume()
+            try require(enables == 1, "An already enabled tap was unnecessarily restarted")
+            h.input.enableForQA()
+            h.input.configure(live: true, fixedEnglish: false, backfill: true)
+            h.input.beginRouteCheck()
+            h.type("dkssud")
+            let field = AXUIElementCreateApplication(h.pid)
+            h.input.updateRoute(.init(pid: h.pid, field: field, window: field, commands: .keyBindings), known: true)
+            try await h.resolve("안녕"); h.flushWake()
+            try require(h.input.enabled && h.text == "안녕" && h.errors.count == 1,
+                        "Typing did not resume after tap recovery")
+            h.input.reset()
+        }
+        var rejected = false
+        do {
+            try DirectInputTap.resumeEventTap(port, failure: "QA re-enable rejected", isEnabled: { _ in false }, enable: { _, _ in })
+        } catch let failure as DirectFailure {
+            rejected = failure.detail == "QA re-enable rejected"
+        }
+        try require(rejected, "A failed tap re-enable was silently accepted")
+        print("PASS disabled keyboard/observer tap recovery: stop, explicit resume, Hangul typing, active tap unchanged, re-enable failure reported (mock tap state)")
+    }
+
     @MainActor static func savePanelFocusChecks() async throws {
         let field = AXUIElementCreateApplication(21001)
         let otherField = AXUIElementCreateApplication(21002)
