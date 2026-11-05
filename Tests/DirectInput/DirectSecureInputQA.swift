@@ -41,6 +41,28 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
         let abc = "com.apple.keylayout.ABC"
         do {
             let s = State(owner), m = s.monitor(owner)
+            s.secure = true; m.check()
+            s.secure = false; m.check()
+            s.time = 0.21; m.check()
+            try require(s.source == owner, "Secure exit did not initially select the owner")
+            s.time = 0.26; s.source = abc; m.sourceChanged()
+            s.time = 0.47; m.check()
+            s.time = 0.68; m.check(); m.sourceChanged()
+            try require(s.source == owner && s.restorations == 1,
+                        "A late ABC change after initial restoration left the owner inactive")
+            let selected = s.selected
+            let reads = s.reads
+            for _ in 0..<10_000 { m.check() }
+            try require(s.selected == selected && s.reads == reads && s.restorations == 1,
+                        "A completed restoration kept polling sources or resumed more than once")
+            s.source = abc; m.sourceChanged()
+            s.time = 1; m.check()
+            try require(s.source == abc && s.selected == selected,
+                        "A completed restoration overrode a later manual ABC selection")
+            print("PASS late ABC after initial restoration returns to \(owner) once")
+        }
+        do {
+            let s = State(owner), m = s.monitor(owner)
             s.sudoPassword = true; m.check()
             try require(s.source == abc, "Sudo password without OS secure input did not select ABC")
             s.secure = true; s.sudoPassword = false; m.check()
