@@ -56,7 +56,7 @@ final class DirectSecureInputSource: NSObject {
         poll()
         let enabled = isSecure()
         // The secure episode stays open while its exit settles. Other unchanged ticks do no source lookup.
-        guard enabled != secure else { return }
+        guard enabled != secure || exitCandidate != nil else { return }
         update(enabled: enabled, source: currentSource())
     }
 
@@ -101,6 +101,10 @@ final class DirectSecureInputSource: NSObject {
                     guard selected == sourceID else {
                         throw NSError(domain: "HannyeongDirect.SecureInput", code: -2,
                             userInfo: [NSLocalizedDescriptionKey: "Input source restoration was not applied: \(selected)"])
+                    }
+                    if source == Self.ascii {
+                        exitCandidate = (selected, time)
+                        return
                     }
                     previousSource = selected
                 } else {
