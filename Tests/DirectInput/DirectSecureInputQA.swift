@@ -21,6 +21,8 @@ import Carbon
         monitor.check()
         time += 0.21
         monitor.check()
+        time += 0.21
+        monitor.check()
     }
 }
 
@@ -39,6 +41,47 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
 
     @MainActor static func run(owner: String) throws {
         let abc = "com.apple.keylayout.ABC"
+        do {
+            let s = State(owner), m = s.monitor(owner)
+            s.secure = true; m.check()
+            s.secure = false; m.check()
+            s.time = 0.21; m.check()
+            try require(s.source == owner && s.restorations == 0,
+                        "The owner was not pending before secure input resumed")
+            s.time = 0.26; s.secure = true; m.check()
+            try require(s.source == abc && s.entries == 1 && s.restorations == 0,
+                        "Secure input resumed during owner settling without selecting ABC")
+            s.secure = false; s.settleExit(m)
+            try require(s.source == owner && s.restorations == 1 && s.entries == 1 &&
+                        s.selected == [abc, owner, abc, owner],
+                        "Secure input resumed during owner settling did not restore the owner once")
+            print("PASS secure input resumed during owner settling restores \(owner) once")
+        }
+        do {
+            let s = State(owner), m = s.monitor(owner)
+            s.secure = true; m.check()
+            s.secure = false; m.check()
+            s.time = 0.21; m.check()
+            try require(s.source == owner && s.restorations == 0,
+                        "Secure exit completed before the owner selection settled")
+            s.time = 0.26; s.source = abc; m.sourceChanged()
+            s.time = 0.47; m.check()
+            try require(s.source == owner && s.restorations == 0,
+                        "A late ABC restoration completed before the owner selection settled")
+            s.time = 0.68; m.check(); m.sourceChanged()
+            try require(s.source == owner && s.restorations == 1,
+                        "A late ABC change after initial restoration left the owner inactive")
+            let selected = s.selected
+            let reads = s.reads
+            for _ in 0..<10_000 { m.check() }
+            try require(s.selected == selected && s.reads == reads && s.restorations == 1,
+                        "A completed restoration kept polling sources or resumed more than once")
+            s.source = abc; m.sourceChanged()
+            s.time = 1; m.check()
+            try require(s.source == abc && s.selected == selected,
+                        "A completed restoration overrode a later manual ABC selection")
+            print("PASS late ABC after initial restoration returns to \(owner) once")
+        }
         do {
             let s = State(owner), m = s.monitor(owner)
             s.sudoPassword = true; m.check()
@@ -100,6 +143,9 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
             s.time = 0.25; m.check()
             try require(s.source == abc && s.restorations == 0, "The final login source change was not allowed to settle")
             s.time = 0.3; m.check(); m.sourceChanged()
+            try require(s.source == owner && s.restorations == 0,
+                        "Enter login completed restoration before the owner selection settled")
+            s.time = 0.51; m.check()
             try require(s.source == owner && s.restorations == 1 && s.selected == [abc, owner],
                         "A delayed ABC change during Enter login lost Hannyeong restoration")
         }
@@ -122,6 +168,18 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
             s.time = 1; m.check()
             try require(s.source == "org.youknowone.inputmethod.Gureum.han2" && s.restorations == 0 && s.selected == [abc],
                         "Pending password restoration overrode a different input source")
+        }
+        do {
+            let s = State(owner), m = s.monitor(owner)
+            s.secure = true; m.check()
+            s.secure = false; m.check()
+            s.time = 0.21; m.check()
+            try require(s.source == owner && s.restorations == 0,
+                        "Owner settling was not pending before a different source was selected")
+            s.time = 0.26; s.source = "org.youknowone.inputmethod.Gureum.han2"; m.sourceChanged()
+            s.time = 1; m.check()
+            try require(s.source == "org.youknowone.inputmethod.Gureum.han2" && s.restorations == 0 && s.selected == [abc, owner],
+                        "Owner settling overrode a different input source")
         }
         do {
             let s = State(owner), m = s.monitor(owner)

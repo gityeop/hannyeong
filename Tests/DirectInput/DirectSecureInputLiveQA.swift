@@ -74,5 +74,20 @@ import Carbon
         RunLoop.current.run(until: Date().addingTimeInterval(0.5))
         guard current() == owner else { throw failure("The restored source did not remain selected after login") }
         print("PASS restored input source remains selected after the login transition")
+        let bounceEnabled = EnableSecureEventInput()
+        guard bounceEnabled == noErr else { throw failure("EnableSecureEventInput failed: \(bounceEnabled)") }
+        ownsSecureInput = true
+        try expect(abc, label: "Post-restoration bounce secure entry")
+        let bounceDisabled = DisableSecureEventInput()
+        guard bounceDisabled == noErr else { throw failure("DisableSecureEventInput failed: \(bounceDisabled)") }
+        ownsSecureInput = false
+        try expect(owner, label: "Initial restoration before delayed ABC")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        try select(abc)
+        try expect(abc, label: "Delayed ABC delivered after initial restoration")
+        try expect(owner, label: "Delayed ABC after initial restoration")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        guard current() == owner else { throw failure("Delayed ABC left the input source inactive after secure input ended") }
+        print("PASS late ABC after initial restoration returns to Hannyeong and remains selected")
     }
 }
