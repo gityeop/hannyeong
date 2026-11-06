@@ -44,7 +44,7 @@ public final class TypingEngine {
             showFeedback: { [weak self] candidates, bounds in
                 guard let self else { return }
                 if self.panel == nil { self.panel = FeedbackPanel() }
-                self.panel?.show(candidates: candidates, scope: .context,
+                self.panel?.show(candidates: candidates, scope: DirectRuntime.feedbackScope,
                     at: NSRect(x: bounds.minX, y: NSScreen.screens.first!.frame.maxY - bounds.maxY,
                                width: bounds.width, height: bounds.height)) { [weak self] index in
                         self?.input.chooseFeedback(index)

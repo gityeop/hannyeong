@@ -3,6 +3,7 @@ import HannyeongCore
 
 /// Uses Hannyeong's existing candidate builder, correction memory and local worker unchanged.
 actor DirectRuntime {
+    static let feedbackScope: CorrectionScope = .always
     nonisolated let client: LocalDecisionClient
     private var memory: CorrectionMemory
     private let correctionsURL: URL
@@ -65,12 +66,12 @@ actor DirectRuntime {
     func correct(_ target: DirectSession.FeedbackTarget, preferred: String) async throws {
         if reloadCorrections { try reloadMemory() }
         var updated = memory
-        try updated.record(raw: target.raw, before: target.before, rejected: target.text, preferred: preferred, scope: .context)
+        try updated.record(raw: target.raw, before: target.before, rejected: target.text, preferred: preferred, scope: Self.feedbackScope)
         try JSONEncoder().encode(updated).write(to: correctionsURL, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: correctionsURL.path)
         memory = updated
         let candidates = try CandidateBuilder.candidates(for: target.raw, includeSplits: true)
-        _ = try await client.correct(raw: target.raw, before: target.before, candidates: candidates, preferred: preferred, scope: .context)
+        _ = try await client.correct(raw: target.raw, before: target.before, candidates: candidates, preferred: preferred, scope: Self.feedbackScope)
     }
 
     private func reloadMemory() throws {

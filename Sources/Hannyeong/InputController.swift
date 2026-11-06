@@ -15,7 +15,7 @@ final class InputController: IMKInputController {
     private var alternatePreview: AlternatePreviewPanel?
     private var previewHostBundleID: String?
     private var feedbackCandidates: [Candidate] = []
-    private var feedbackScope: CorrectionScope = .context
+    private var feedbackScope: CorrectionScope = .always
     private let feedbackLogger = Logger(subsystem: "com.yeop.inputmethod.Hannyeong", category: "Feedback")
     private let shortcutLogger = Logger(subsystem: "com.yeop.inputmethod.Hannyeong", category: "Shortcuts")
     private lazy var rightCommand = RightCommandGesture { [weak self] action in
@@ -28,7 +28,7 @@ final class InputController: IMKInputController {
             self.session?.toggleLanguage()
             self.shortcutLogger.notice("Right Command single tap handled")
         case .correction:
-            self.showFeedback(scope: .context, completePending: true)
+            self.showFeedback(scope: .always, completePending: true)
             self.shortcutLogger.notice("Right Command double tap handled")
         }
     }
