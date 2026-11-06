@@ -77,7 +77,11 @@ final class NativeInputEngine: NSObject {
 
     func reset() { engine?.reset() }
     func recheckInputTarget() { engine?.recheckInputTarget() }
-    func resumeAfterSecureInput() {
+    func resumeAfterSecureInput(retrying: Bool = false) {
+        if retrying {
+            failed = false
+            logger.notice("Manual input recovery requested")
+        }
         synchronizeSource()
         engine?.resumeAfterSecureInput()
     }

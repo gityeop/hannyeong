@@ -264,9 +264,15 @@ final class InputController: IMKInputController {
         shortcutLogger.notice("Input menu requested; id=\(String(describing: ObjectIdentifier(self)), privacy: .public) session=\(self.session != nil)")
         let menu = NSMenu(title: "한녕")
         menu.autoenablesItems = false
+        let recovery = menu.addItem(withTitle: "한녕 다시 켜기", action: #selector(recoverInput(_:)), keyEquivalent: "")
+        recovery.target = self
         let settings = menu.addItem(withTitle: "설정…", action: #selector(showPreferences(_:)), keyEquivalent: "")
         settings.target = self
         return menu
+    }
+
+    @objc private func recoverInput(_ sender: Any?) {
+        SecureInputSource.shared.reselect()
     }
 
     // InputMethodKit dispatches menu selectors with a command dictionary as sender.
