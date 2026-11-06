@@ -5,6 +5,8 @@ import os
 
 @MainActor
 final class SecureInputSource: NSObject, NSMenuDelegate {
+    static let shared = SecureInputSource()
+
     private enum Presentation {
         case hidden
         case pending(Timer)
@@ -100,12 +102,14 @@ final class SecureInputSource: NSObject, NSMenuDelegate {
         return item
     }
 
-    @objc private func reselect() {
-        guard presentation.statusItem != nil else { return }
+    @objc func reselect() {
         do {
             guard try monitor.requestReselection() else {
                 AppSupport.shared.showError("보안 입력이 아직 켜져 있습니다. 암호 입력을 마치거나 입력란을 벗어나세요.")
                 return
+            }
+            if TypingEngine.currentSourceID == Self.sourceID {
+                NativeInputEngine.shared.resumeAfterSecureInput(retrying: true)
             }
             dismissIfSelected()
         } catch {
