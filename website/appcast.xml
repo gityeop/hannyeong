@@ -3,6 +3,21 @@
     <channel>
         <title>Hannyeong</title>
         <item>
+            <title>0.4.19</title>
+            <pubDate>Sun, 08 Nov 2026 00:12:20 +0900</pubDate>
+            <link>https://gityeop.github.io/hannyeong/</link>
+            <sparkle:version>181</sparkle:version>
+            <sparkle:shortVersionString>0.4.19</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.19/Hannyeong-0.4.19-arm64.zip" length="53492400" type="application/octet-stream" sparkle:edSignature="zK8m2BVOEwDtmcJePqwV39wQ+Smh8qY6t3UMYX9V4+oUu8wxsbGWr8gHjqrpyxxLKrzjsvBKRbVgpbmAgbaXAA==" />
+            <description>&lt;h2&gt;한녕 0.4.19&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;교정으로 등록한 영문 표기가 타이핑할 때 유지되도록 개선했습니다.&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+        </item>
+        <item>
             <title>0.4.18</title>
             <pubDate>Fri, 06 Nov 2026 17:55:32 +0900</pubDate>
             <link>https://gityeop.github.io/hannyeong/</link>
