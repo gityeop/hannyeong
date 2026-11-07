@@ -344,7 +344,7 @@ struct DirectInputQA {
         catch { fputs("Direct input QA failed: \(error)\n", stderr); exit(1) }
     }
 
-    @MainActor static func registeredEntityChecks(_ runtime: DirectRuntime) async throws {
+    @MainActor static func registeredEntityChecks(_ runtime: DirectRuntime, settings: RegisteredEntitySettings) async throws {
         let cases = [
             ("gptdms ", "gpt은 "), ("gptgkrh ", "gpt하고 "), ("gptrk ", "gpt가 "),
             ("tlcdhk ", "tlc와 "), ("chatgptrhk ", "chatgpt과 "), ("gptrlsmd ", "gpt기능 "),
@@ -400,7 +400,7 @@ struct DirectInputQA {
         let resources = URL(fileURLWithPath: CommandLine.arguments[1])
         let correctedRuntime = DirectRuntime(client: runtime.client,
             frequencies: try WordFrequencies.load(resources.appendingPathComponent("rule-lexicon.json")),
-            correctionsURL: correctionURL, memory: memory)
+            correctionsURL: correctionURL, memory: memory, entities: settings)
         let corrected = try await correctedRuntime.decide(.init(revision: 1, raw: "gptrk", before: "", separator: " "))
         guard case .boundary(let result) = corrected else {
             throw DirectFailure(detail: "The saved entity correction did not resolve its boundary")
@@ -408,6 +408,58 @@ struct DirectInputQA {
         try require(result.text == preferred,
                     "Direct registered rule overrode an explicit correction")
         print("PASS Direct registered spellings, physical Shift+=, Return and saved correction priority")
+    }
+
+    @MainActor static func userEntityChecks(_ runtime: DirectRuntime, settings: RegisteredEntitySettings,
+                                             directory: URL, frequencies: WordFrequencies) async throws {
+        let store = CorrectionStore(url: directory.appendingPathComponent("entity-corrections.json"))
+        let integrated = DirectRuntime(client: runtime.client, frequencies: frequencies,
+            correctionsURL: store.url, memory: CorrectionMemory(), entities: settings)
+
+        func expect(_ raw: String, _ expected: String) async throws {
+            let h = Harness(runtime: integrated)
+            h.input.enableForQA()
+            h.type(raw + " ")
+            for _ in 0..<500 {
+                h.flushWake()
+                if (h.runtimeBoundaryCount == 1 && h.text == expected + " ") || !h.errors.isEmpty { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            try require(h.runtimeBoundaryCount == 1 && h.text == expected + " " && h.errors.isEmpty,
+                        "Direct user entity \(raw): got \(h.text.debugDescription), expected \(expected.debugDescription), errors: \(h.errors)")
+            h.input.reset()
+        }
+
+        func expectModel(_ raw: String) async throws {
+            let candidates = try CandidateBuilder.candidates(for: raw, includeSplits: true)
+            let model = try await runtime.client.decide(raw: raw, before: "", candidates: candidates)
+            try await expect(raw, model.predicted)
+        }
+
+        try await expectModel("codexrk")
+        try settings.save("codex")
+        try await expect("codexrk", "codex가")
+        try await expect("codexdptj", "codex에서")
+        try settings.save("codexrk")
+        try await expect("codexrk", "codexrk")
+        try await expect("codexrkrk", "codexrk가")
+        try settings.remove("codexrk")
+        let exact = try HangulComposer.compose("codex")
+        let attached = try HangulComposer.compose("codexrk")
+        try store.record(raw: "codex", before: "", rejected: "codex", preferred: exact, scope: .always)
+        try store.record(raw: "codexrk", before: "", rejected: "codex가", preferred: attached, scope: .always)
+        try await expect("codex", exact)
+        try await expect("codexrk", attached)
+        let corrections = try store.load().entries
+
+        try settings.save("zpv", replacing: "codex")
+        try await expectModel("codexdptj")
+        try await expect("zpvrk", "zpv가")
+        try settings.remove("zpv")
+        try await expectModel("zpvrk")
+        try await expect("codexrk", attached)
+        try require(try store.load().entries == corrections, "Entity edits changed saved corrections")
+        print("PASS Direct user entity add, rename, removal, and exact corrections")
     }
 
     @MainActor static func run() async throws {
@@ -1079,9 +1131,16 @@ struct DirectInputQA {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hannyeong-direct-qa-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let runtime = try DirectRuntime(resources: resources, personalDirectory: directory, memory: CorrectionMemory())
+        let suite = "HannyeongDirectEntityQA." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = RegisteredEntitySettings(defaults: defaults)
+        let runtime = try DirectRuntime(resources: resources, personalDirectory: directory,
+                                        memory: CorrectionMemory(), entities: settings)
         _ = try await runtime.client.prepare()
-        try await registeredEntityChecks(runtime)
+        try await registeredEntityChecks(runtime, settings: settings)
+        try await userEntityChecks(runtime, settings: settings, directory: directory,
+                                   frequencies: WordFrequencies.load(resources.appendingPathComponent("rule-lexicon.json")))
         try policyChecks()
         for (keys, expected) in [("to go home", "to go home "),
                                   ("so rkqtdmfh rkatk", "내 값으로 감사 "),
@@ -1143,7 +1202,7 @@ struct DirectInputQA {
         let store = CorrectionStore(url: correctionsURL)
         let integrated = DirectRuntime(client: runtime.client,
             frequencies: try WordFrequencies.load(resources.appendingPathComponent("rule-lexicon.json")),
-            correctionsURL: store.url, memory: try store.load())
+            correctionsURL: store.url, memory: try store.load(), entities: settings)
         let koreanChrome = try HangulComposer.compose("chrome")
         let target = DirectSession.FeedbackTarget(revision: 1, raw: "chrome", before: "shared settings ", text: "chrome", separator: "")
         try await integrated.correct(target, preferred: koreanChrome)

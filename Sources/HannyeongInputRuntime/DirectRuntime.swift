@@ -9,8 +9,11 @@ actor DirectRuntime {
     private let correctionsURL: URL
     private let frequencies: WordFrequencies
     private let reloadCorrections: Bool
+    private let entities: RegisteredEntitySettings
 
-    init(resources: URL, personalDirectory: URL, memory: CorrectionMemory) throws {
+    init(resources: URL, personalDirectory: URL, memory: CorrectionMemory,
+         entities: RegisteredEntitySettings = .init()) throws {
+        self.entities = entities
         let saved = try JSONDecoder().decode(LocalRuntimeConfiguration.self,
             from: Data(contentsOf: resources.appendingPathComponent("local-runtime.json")))
         let runtime = LocalRuntimeConfiguration(
@@ -26,7 +29,9 @@ actor DirectRuntime {
         self.frequencies = try WordFrequencies.load(resources.appendingPathComponent("rule-lexicon.json"))
     }
 
-    init(client: LocalDecisionClient, frequencies: WordFrequencies, correctionsURL: URL, memory: CorrectionMemory) {
+    init(client: LocalDecisionClient, frequencies: WordFrequencies, correctionsURL: URL, memory: CorrectionMemory,
+         entities: RegisteredEntitySettings = .init()) {
+        self.entities = entities
         self.client = client
         self.frequencies = frequencies
         self.correctionsURL = correctionsURL
@@ -64,7 +69,8 @@ actor DirectRuntime {
             return (.init(text: preferred, probabilities: [preferred: 1]), false)
         }
         if allowsEntity, let entity = try RegisteredEntityReading.match(raw: raw, before: before, separator: separator,
-                                                                        candidates: candidates, frequencies: frequencies) {
+                                                                        candidates: candidates, userNames: entities.names,
+                                                                        frequencies: frequencies) {
             return (.init(text: entity.text, probabilities: [entity.text: 1]), true)
         }
         let decision = try await client.decide(raw: raw, before: before, candidates: candidates)

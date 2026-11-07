@@ -167,6 +167,47 @@ private struct BackfillQA {
         corrected.type("gptrk ")
         try await corrected.settle()
         try expect(corrected, preferred + " ", "IMK saved entity correction wins")
+        let settings = RegisteredEntitySettings(defaults: defaults)
+        let userStore = CorrectionStore(url: folder.appendingPathComponent("user-entity-corrections.json"))
+        let userFixture = Fixture(prefix: "", store: userStore, local: local, defaults: defaults)
+        func appendUserInput(_ raw: String, expecting selected: String? = nil) async throws {
+            userFixture.view.string = ""
+            userFixture.view.setSelectedRange(NSRange(location: 0, length: 0))
+            let expected: String
+            if let selected { expected = selected }
+            else {
+                let candidates = try CandidateBuilder.candidates(for: raw, includeSplits: true)
+                expected = try await local.decide(raw: raw, before: "", candidates: candidates).predicted
+            }
+            userFixture.type(raw + " ")
+            try await userFixture.settle()
+            try expect(userFixture, expected + " ", "IMK user entity \(raw)")
+        }
+
+        defaults.set(false, forKey: PriorWordCorrectionSettings.enabledKey)
+        try await appendUserInput("codexrk")
+        try settings.save("codex")
+        try await appendUserInput("codexrk", expecting: "codex가")
+        try await appendUserInput("codexdptj", expecting: "codex에서")
+        try settings.save("codexrk")
+        try await appendUserInput("codexrk", expecting: "codexrk")
+        try await appendUserInput("codexrkrk", expecting: "codexrk가")
+        try settings.remove("codexrk")
+        let exact = try HangulComposer.compose("codex")
+        let attached = try HangulComposer.compose("codexrk")
+        try userStore.record(raw: "codex", before: "", rejected: "codex", preferred: exact, scope: .always)
+        try userStore.record(raw: "codexrk", before: "", rejected: "codex가", preferred: attached, scope: .always)
+        try await appendUserInput("codex", expecting: exact)
+        try await appendUserInput("codexrk", expecting: attached)
+        let corrections = try userStore.load().entries
+
+        try settings.save("zpv", replacing: "codex")
+        try await appendUserInput("codexdptj")
+        try await appendUserInput("zpvrk", expecting: "zpv가")
+        try settings.remove("zpv")
+        try await appendUserInput("zpvrk")
+        try await appendUserInput("codexrk", expecting: attached)
+        try require(try userStore.load().entries == corrections, "Entity edits changed saved corrections")
         if CommandLine.arguments.contains("--registered-entities-only") { return log }
 
         defaults.set(false, forKey: PriorWordCorrectionSettings.enabledKey)

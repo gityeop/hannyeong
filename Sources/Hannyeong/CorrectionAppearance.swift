@@ -26,6 +26,11 @@ final class CorrectionDetailsView: NSView {
     private let form = NSStackView()
     private let message = NSTextView()
     private let messageScroll = NSScrollView()
+    private let entityForm = NSStackView()
+    private let entityName = NSTextField(string: "")
+    private let entityError = NSTextField(wrappingLabelWithString: "")
+    var onEntitySave: ((String) -> Void)?
+    var onEntityCancel: (() -> Void)?
     private var values: [NSTextField] = []
 
     override init(frame: NSRect) {
@@ -70,6 +75,7 @@ final class CorrectionDetailsView: NSView {
         messageScroll.drawsBackground = false
         messageScroll.translatesAutoresizingMaskIntoConstraints = false
         addSubview(messageScroll)
+        buildEntityForm()
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: topAnchor),
             title.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -85,7 +91,68 @@ final class CorrectionDetailsView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("CorrectionDetailsView does not use a storyboard") }
 
+    private func buildEntityForm() {
+        entityName.placeholderString = "예: codex"
+        entityName.setAccessibilityLabel("엔티티 이름")
+        entityName.target = self
+        entityName.action = #selector(saveEntity)
+        let save = SettingsActionButton(title: "저장")
+        save.target = self
+        save.action = #selector(saveEntity)
+        let cancel = SettingsActionButton(title: "취소")
+        cancel.target = self
+        cancel.action = #selector(cancelEntity)
+
+        let controls = NSStackView(views: [entityName, save, cancel])
+        controls.spacing = 8
+        entityName.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
+        let hint = NSTextField(wrappingLabelWithString: "예를 들어 codex를 저장하면 codex가, codex에서처럼 입력할 때 이름을 유지합니다.")
+        hint.font = .systemFont(ofSize: 12)
+        hint.textColor = .secondaryLabelColor
+        entityError.font = .systemFont(ofSize: 12)
+        entityError.textColor = .systemRed
+        entityForm.orientation = .vertical
+        entityForm.alignment = .leading
+        entityForm.spacing = 10
+        for item in [controls, hint, entityError] {
+            entityForm.addArrangedSubview(item)
+            item.widthAnchor.constraint(equalTo: entityForm.widthAnchor).isActive = true
+        }
+        entityForm.isHidden = true
+        entityForm.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(entityForm)
+        NSLayoutConstraint.activate([
+            entityForm.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 14),
+            entityForm.leadingAnchor.constraint(equalTo: leadingAnchor),
+            entityForm.trailingAnchor.constraint(equalTo: trailingAnchor),
+            entityForm.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor)
+        ])
+    }
+
+    func showEntity(_ name: String?) {
+        form.isHidden = true
+        messageScroll.isHidden = true
+        entityForm.isHidden = false
+        title.stringValue = name == nil ? "엔티티 추가" : "엔티티 이름 수정"
+        entityName.stringValue = name ?? ""
+        entityError.isHidden = true
+    }
+
+    func focusEntityName() {
+        window?.makeFirstResponder(entityName)
+    }
+
+    func showEntityError(_ message: String) {
+        entityError.stringValue = message
+        entityError.isHidden = false
+    }
+
+    @objc private func saveEntity() { onEntitySave?(entityName.stringValue) }
+
+    @objc private func cancelEntity() { onEntityCancel?() }
+
     func show(_ entry: CorrectionExample) {
+        entityForm.isHidden = true
         form.isHidden = false
         messageScroll.isHidden = true
         title.stringValue = "선택한 교정"
@@ -100,6 +167,7 @@ final class CorrectionDetailsView: NSView {
 
     func showMessage(_ text: String, title: String = "선택한 교정") {
         self.title.stringValue = title
+        entityForm.isHidden = true
         form.isHidden = true
         messageScroll.isHidden = false
         message.string = text

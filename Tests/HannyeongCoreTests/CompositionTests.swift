@@ -55,6 +55,45 @@ final class CompositionTests: XCTestCase {
         XCTAssertNil(try match("gptrk", before: "한글"))
     }
 
+    @MainActor
+    func testUserEntityNamesPersistAndUseTheSameWordRules() throws {
+        let suite = "HannyeongEntityQA." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = RegisteredEntitySettings(defaults: defaults)
+        let frequencies = try JSONDecoder().decode(WordFrequencies.self,
+            from: Data(#"{"english":{},"korean":{}}"#.utf8))
+        func match(_ raw: String, before: String = "", separator: String? = nil) throws -> String? {
+            try RegisteredEntityReading.match(raw: raw, before: before, separator: separator,
+                candidates: CandidateBuilder.candidates(for: raw, includeSplits: true),
+                userNames: settings.names, frequencies: frequencies)?.text
+        }
+
+        XCTAssertNil(try match("codexrk"))
+        XCTAssertEqual(try settings.save(" codex "), "codex")
+        XCTAssertEqual(RegisteredEntitySettings(defaults: try XCTUnwrap(UserDefaults(suiteName: suite))).names, ["codex"])
+        XCTAssertEqual(try match("codexrk"), "codex가")
+        XCTAssertEqual(try match("codexdptj"), "codex에서")
+        XCTAssertNil(try match("codexrk", before: "한글"))
+        XCTAssertThrowsError(try settings.save("gpt"))
+        XCTAssertThrowsError(try settings.save("codex"))
+        XCTAssertThrowsError(try settings.save("codex++"))
+        try settings.save("codexrk")
+        XCTAssertEqual(try match("codexrk"), "codexrk")
+        XCTAssertEqual(try match("codexrkrk"), "codexrk가")
+        try settings.remove("codexrk")
+        XCTAssertEqual(try match("codexrk"), "codex가")
+
+        try settings.save("zpv+", replacing: "codex")
+        XCTAssertNil(try match("codexrk"))
+        XCTAssertEqual(try match("zpv", separator: "+"), "zpv")
+        XCTAssertEqual(try match("fh", before: "zpv+"), "로")
+        try settings.remove("zpv+")
+        XCTAssertTrue(settings.names.isEmpty)
+        XCTAssertNil(try match("fh", before: "zpv+"))
+        XCTAssertEqual(try match("gptrk"), "gpt가")
+    }
+
     func testAmbiguousKeysKeepBothReadings() throws {
         XCTAssertEqual(try CandidateBuilder.candidates(for: "go", includeSplits: false).map(\.text), ["go", "해"])
         XCTAssertEqual(try CandidateBuilder.candidates(for: "to", includeSplits: false).map(\.text), ["to", "새"])

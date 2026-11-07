@@ -83,6 +83,7 @@ final class CompositionSession {
     private let localClient: LocalDecisionClient?
     private let wordFrequencies: WordFrequencies?
     private let previewDefaults: UserDefaults
+    private let entities: RegisteredEntitySettings
     private let liveDetectionOverride: Bool?
     private var liveDetectionEnabled: Bool {
         liveDetectionOverride ?? previewDefaults.bool(forKey: CompositionPreviewSettings.liveEnabledKey)
@@ -146,6 +147,7 @@ final class CompositionSession {
         self.localClient = localClient
         self.wordFrequencies = wordFrequencies
         self.previewDefaults = previewDefaults
+        self.entities = RegisteredEntitySettings(defaults: previewDefaults)
         self.liveDetectionOverride = liveDetectionOverride
         self.hostBundleID = hostBundleID
         self.selectCommittedText = selectCommittedText ?? { expected in
@@ -760,7 +762,7 @@ final class CompositionSession {
             return ({ Decided(text: preferred, probabilities: [preferred: 1]) }, false)
         }
         if allowsEntity, let entity = try RegisteredEntityReading.match(raw: raw, before: before, separator: separator,
-                candidates: candidates, frequencies: wordFrequencies ?? LocalModelService.wordFrequencies()) {
+                candidates: candidates, userNames: entities.names, frequencies: wordFrequencies ?? LocalModelService.wordFrequencies()) {
             return ({ Decided(text: entity.text, probabilities: [entity.text: 1]) }, true)
         }
         let local = try localClient ?? LocalModelService.client()

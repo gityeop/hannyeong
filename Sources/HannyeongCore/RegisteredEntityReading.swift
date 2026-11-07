@@ -1,12 +1,15 @@
 public enum RegisteredEntityReading {
     private struct Entity {
         let stem: String
-        var symbol: Character? = nil
+        let symbol: Character?
+
+        init(_ name: String) {
+            symbol = name.hasSuffix("+") ? "+" : nil
+            stem = symbol == nil ? name : String(name.dropLast())
+        }
     }
 
-    private static let entities = [
-        Entity(stem: "gpt"), Entity(stem: "tlc"), Entity(stem: "tla", symbol: "+"), Entity(stem: "chatgpt"),
-    ]
+    static let builtInNames = ["gpt", "tlc", "tla+", "chatgpt"]
     private static let particlesAndConnectors: Set<String> = [
         "은", "는", "이", "가", "을", "를", "와", "과", "하고", "이랑", "랑",
         "에", "에도", "에서", "에서도", "에서는", "에서부터", "에게", "한테",
@@ -15,9 +18,11 @@ public enum RegisteredEntityReading {
     ]
 
     public static func match(raw: String, before: String, separator: String?, candidates: [Candidate],
-                             frequencies: @autoclosure () throws -> WordFrequencies) throws -> Candidate? {
+                             userNames: [String] = [], frequencies: @autoclosure () throws -> WordFrequencies) throws -> Candidate? {
         let startsWord = isWordStart(after: before)
-        for entity in entities {
+        let names = (builtInNames + userNames).sorted { $0.count > $1.count }
+        for name in names {
+            let entity = Entity(name)
             if let symbol = entity.symbol {
                 if raw == entity.stem, separator?.first == symbol, startsWord {
                     return candidates.first { $0.text == raw }
