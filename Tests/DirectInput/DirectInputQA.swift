@@ -78,7 +78,12 @@ private final class FocusChecks: @unchecked Sendable {
 @MainActor
 private final class Harness {
     let nativeMode: Bool
-    init(nativeMode: Bool = false) { self.nativeMode = nativeMode }
+    let runtime: DirectRuntime?
+    private(set) var runtimeBoundaryCount = 0
+    init(nativeMode: Bool = false, runtime: DirectRuntime? = nil) {
+        self.nativeMode = nativeMode
+        self.runtime = runtime
+    }
     let proxy = CGEventTapProxy(bitPattern: 1)!
     let pid = getpid() + 1234
     var text = ""
@@ -145,7 +150,12 @@ private final class Harness {
     refreshRoute: { [self] in routeRefreshes += 1 })
 
     func decision(_ request: DirectSession.Snapshot) async throws -> DirectSession.Decision {
-        try await withCheckedThrowingContinuation { requests.append((request, $0)) }
+        if let runtime {
+            let decision = try await runtime.decide(request)
+            if case .boundary = decision { runtimeBoundaryCount += 1 }
+            return decision
+        }
+        return try await withCheckedThrowingContinuation { requests.append((request, $0)) }
     }
 
     func settle() async throws {
@@ -332,6 +342,124 @@ struct DirectInputQA {
             try await run(); print("PASS direct input QA (isolated events only; no event tap, posting, or input-source switch)")
         }
         catch { fputs("Direct input QA failed: \(error)\n", stderr); exit(1) }
+    }
+
+    @MainActor static func registeredEntityChecks(_ runtime: DirectRuntime, settings: RegisteredEntitySettings) async throws {
+        let cases = [
+            ("gptdms ", "gpt은 "), ("gptgkrh ", "gpt하고 "), ("gptrk ", "gpt가 "),
+            ("tlcdhk ", "tlc와 "), ("chatgptrhk ", "chatgpt과 "), ("gptrlsmd ", "gpt기능 "),
+            ("gptdpeh ", "gpt에도 "), ("tlcdlrh ", "tlc이고 "), ("tla+dptjsms ", "tla+에서는 "),
+            ("gpt ", "gpt "), ("tlc ", "tlc "), ("chatgpt ", "chatgpt "),
+            ("tla+", "tla+"), ("tla+fh ", "tla+로 "), ("tla+dptjeh ", "tla+에서도 "),
+            ("1+2 ", "1+2 "), ("chrome.", "chrome."), ("gptrk.", "gpt가."),
+        ]
+        for (keys, expected) in cases {
+            let h = Harness(runtime: runtime)
+            h.input.enableForQA()
+            for char in keys {
+                if char == "+" {
+                    if keys == "tla+fh " {
+                        try await h.waitForWake()
+                        h.flushWake()
+                        try require(h.text == "심", "The ordinary live reading of tla was not applied before +")
+                    }
+                    h.key("+", code: 24, flags: .maskShift)
+                } else {
+                    h.key(String(char))
+                }
+            }
+            let expectedBoundaries = keys == "1+2 " ? 0 : (keys.contains("+") && keys.last == " " ? 2 : 1)
+            for _ in 0..<500 {
+                h.flushWake()
+                if (h.text == expected && h.runtimeBoundaryCount == expectedBoundaries) || !h.errors.isEmpty { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            try require(h.text == expected && h.runtimeBoundaryCount == expectedBoundaries && h.errors.isEmpty,
+                        "Direct registered entity \(keys.debugDescription) -> \(h.text.debugDescription), expected \(expected.debugDescription), errors: \(h.errors)")
+            if keys.contains("+") {
+                try require(h.deliveredPhysical.filter { $0 == "+" }.count == 1,
+                            "Physical Shift+= did not reach the host exactly once")
+            }
+            h.input.reset()
+        }
+        let noSpace = Harness(runtime: runtime)
+        noSpace.input.enableForQA()
+        noSpace.type("gptrk")
+        try await noSpace.waitForWake()
+        noSpace.flushWake()
+        noSpace.key("\r", code: 36)
+        try require(noSpace.submitted == ["gpt가"] && noSpace.errors.isEmpty,
+                    "Direct Return did not submit the decided entity without a separator")
+
+        let preferred = try HangulComposer.compose("gptrk")
+        var memory = CorrectionMemory()
+        try memory.record(raw: "gptrk", before: "", rejected: "gpt가", preferred: preferred, scope: .always)
+        let correctionURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: correctionURL) }
+        try JSONEncoder().encode(memory).write(to: correctionURL)
+        let resources = URL(fileURLWithPath: CommandLine.arguments[1])
+        let correctedRuntime = DirectRuntime(client: runtime.client,
+            frequencies: try WordFrequencies.load(resources.appendingPathComponent("rule-lexicon.json")),
+            correctionsURL: correctionURL, memory: memory, entities: settings)
+        let corrected = try await correctedRuntime.decide(.init(revision: 1, raw: "gptrk", before: "", separator: " "))
+        guard case .boundary(let result) = corrected else {
+            throw DirectFailure(detail: "The saved entity correction did not resolve its boundary")
+        }
+        try require(result.text == preferred,
+                    "Direct registered rule overrode an explicit correction")
+        print("PASS Direct registered spellings, physical Shift+=, Return and saved correction priority")
+    }
+
+    @MainActor static func userEntityChecks(_ runtime: DirectRuntime, settings: RegisteredEntitySettings,
+                                             directory: URL, frequencies: WordFrequencies) async throws {
+        let store = CorrectionStore(url: directory.appendingPathComponent("entity-corrections.json"))
+        let integrated = DirectRuntime(client: runtime.client, frequencies: frequencies,
+            correctionsURL: store.url, memory: CorrectionMemory(), entities: settings)
+
+        func expect(_ raw: String, _ expected: String) async throws {
+            let h = Harness(runtime: integrated)
+            h.input.enableForQA()
+            h.type(raw + " ")
+            for _ in 0..<500 {
+                h.flushWake()
+                if (h.runtimeBoundaryCount == 1 && h.text == expected + " ") || !h.errors.isEmpty { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            try require(h.runtimeBoundaryCount == 1 && h.text == expected + " " && h.errors.isEmpty,
+                        "Direct user entity \(raw): got \(h.text.debugDescription), expected \(expected.debugDescription), errors: \(h.errors)")
+            h.input.reset()
+        }
+
+        func expectModel(_ raw: String) async throws {
+            let candidates = try CandidateBuilder.candidates(for: raw, includeSplits: true)
+            let model = try await runtime.client.decide(raw: raw, before: "", candidates: candidates)
+            try await expect(raw, model.predicted)
+        }
+
+        try await expectModel("codexrk")
+        try settings.save("codex")
+        try await expect("codexrk", "codex가")
+        try await expect("codexdptj", "codex에서")
+        try settings.save("codexrk")
+        try await expect("codexrk", "codexrk")
+        try await expect("codexrkrk", "codexrk가")
+        try settings.remove("codexrk")
+        let exact = try HangulComposer.compose("codex")
+        let attached = try HangulComposer.compose("codexrk")
+        try store.record(raw: "codex", before: "", rejected: "codex", preferred: exact, scope: .always)
+        try store.record(raw: "codexrk", before: "", rejected: "codex가", preferred: attached, scope: .always)
+        try await expect("codex", exact)
+        try await expect("codexrk", attached)
+        let corrections = try store.load().entries
+
+        try settings.save("zpv", replacing: "codex")
+        try await expectModel("codexdptj")
+        try await expect("zpvrk", "zpv가")
+        try settings.remove("zpv")
+        try await expectModel("zpvrk")
+        try await expect("codexrk", attached)
+        try require(try store.load().entries == corrections, "Entity edits changed saved corrections")
+        print("PASS Direct user entity add, rename, removal, and exact corrections")
     }
 
     @MainActor static func run() async throws {
@@ -1003,8 +1131,16 @@ struct DirectInputQA {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hannyeong-direct-qa-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let runtime = try DirectRuntime(resources: resources, personalDirectory: directory, memory: CorrectionMemory())
+        let suite = "HannyeongDirectEntityQA." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = RegisteredEntitySettings(defaults: defaults)
+        let runtime = try DirectRuntime(resources: resources, personalDirectory: directory,
+                                        memory: CorrectionMemory(), entities: settings)
         _ = try await runtime.client.prepare()
+        try await registeredEntityChecks(runtime, settings: settings)
+        try await userEntityChecks(runtime, settings: settings, directory: directory,
+                                   frequencies: WordFrequencies.load(resources.appendingPathComponent("rule-lexicon.json")))
         try policyChecks()
         for (keys, expected) in [("to go home", "to go home "),
                                   ("so rkqtdmfh rkatk", "내 값으로 감사 "),
@@ -1038,7 +1174,9 @@ struct DirectInputQA {
             print("MODEL_CONTINUATION \(keys) -> \(host)")
             try require(host == expected, "Real model continuation differed: \(keys) -> \(host)")
         }
-        for (raw, before) in [("dkssud", ""), ("claude", ""), ("chrome", ""), ("gksrmf", ""), ("githubdp", ""), ("to", "Let's ")] {
+        for (raw, before) in [("dkssud", ""), ("claude", ""), ("chrome", ""), ("gksrmf", ""), ("githubdp", ""), ("to", "Let's "),
+                              ("qzxgkrh", ""), ("gptqzx", ""), ("gksrmfgptgkrh", ""), ("tla", ""),
+                              ("fh", "tla +"), ("fh", "한글tla+"), ("fh", "tla+ ")] {
             let request = DirectSession.Snapshot(revision: 1, raw: raw, before: before)
             let direct = try await runtime.decide(request)
             let candidates = try CandidateBuilder.candidates(for: raw, includeSplits: true)
@@ -1047,7 +1185,7 @@ struct DirectInputQA {
             if raw == "dkssud" { try require(direct == .live(try .init(text: "안녕", raw: raw)), "Existing model Korean sanity case failed") }
             if raw == "claude" || raw == "chrome" { try require(direct == .live(try .init(text: raw, raw: raw)), "Existing model English sanity case failed") }
         }
-        print("PASS existing model/candidate preservation: same decisions for six full-word and context cases")
+        print("PASS existing model/candidate preservation: same decisions for ordinary words and non-entity contexts")
 
         let correction = DirectSession.FeedbackTarget(revision: 1, raw: "so", before: "typing ", text: "so", separator: " ")
         try await runtime.correct(correction, preferred: "내")
@@ -1064,7 +1202,7 @@ struct DirectInputQA {
         let store = CorrectionStore(url: correctionsURL)
         let integrated = DirectRuntime(client: runtime.client,
             frequencies: try WordFrequencies.load(resources.appendingPathComponent("rule-lexicon.json")),
-            correctionsURL: store.url, memory: try store.load())
+            correctionsURL: store.url, memory: try store.load(), entities: settings)
         let koreanChrome = try HangulComposer.compose("chrome")
         let target = DirectSession.FeedbackTarget(revision: 1, raw: "chrome", before: "shared settings ", text: "chrome", separator: "")
         try await integrated.correct(target, preferred: koreanChrome)

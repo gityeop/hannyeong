@@ -83,6 +83,7 @@ final class CompositionSession {
     private let localClient: LocalDecisionClient?
     private let wordFrequencies: WordFrequencies?
     private let previewDefaults: UserDefaults
+    private let entities: RegisteredEntitySettings
     private let liveDetectionOverride: Bool?
     private var liveDetectionEnabled: Bool {
         liveDetectionOverride ?? previewDefaults.bool(forKey: CompositionPreviewSettings.liveEnabledKey)
@@ -146,6 +147,7 @@ final class CompositionSession {
         self.localClient = localClient
         self.wordFrequencies = wordFrequencies
         self.previewDefaults = previewDefaults
+        self.entities = RegisteredEntitySettings(defaults: previewDefaults)
         self.liveDetectionOverride = liveDetectionOverride
         self.hostBundleID = hostBundleID
         self.selectCommittedText = selectCommittedText ?? { expected in
@@ -390,7 +392,7 @@ final class CompositionSession {
             raw = ""
             if !inlineComposition.isActive { render() }
             let selected = try preservePreview ? displayed :
-                ReturnDecision.resolve(decision(for: keys, before: context)).text
+                ReturnDecision.resolve(decision(for: keys, before: context).request).text
             try commitWords([selected], source: preservePreview ? .inlinePreview : .automaticOrMemory)
         }
     }
@@ -450,7 +452,7 @@ final class CompositionSession {
                 // Coalesce rapid keystrokes; typing itself never waits for the model.
                 try await Task.sleep(for: .milliseconds(80))
                 guard let self else { return }
-                let result = try await self.decision(for: keys, before: before)()
+                let result = try await self.decision(for: keys, before: before).request()
                 guard !Task.isCancelled, self.active, self.raw == keys,
                       self.liveDetectionEnabled else { return }
                 guard let reading = try CandidateBuilder.candidates(for: keys, includeSplits: true)
@@ -746,35 +748,44 @@ final class CompositionSession {
         catch { report(error) }
     }
 
-    private func decision(for raw: String, before: String) throws -> (@Sendable () async throws -> Decided) {
-        guard !raw.isEmpty else { return { Decided(text: "", probabilities: ["": 1]) } }
+    private typealias DecisionRequest = @Sendable () async throws -> Decided
+
+    private func decision(for raw: String, before: String, separator: String? = nil, allowsEntity: Bool = true)
+        throws -> (request: DecisionRequest, locksSpelling: Bool) {
+        guard !raw.isEmpty else { return ({ Decided(text: "", probabilities: ["": 1]) }, false) }
         let candidates = try CandidateBuilder.candidates(for: raw, includeSplits: true)
         let memory = try corrections.load()
         if let preferred = memory.preferred(raw: raw, before: before) {
-            let rememberedCandidates = try CandidateBuilder.candidates(for: raw, includeSplits: true)
-            guard rememberedCandidates.contains(where: { $0.text == preferred }) else {
+            guard candidates.contains(where: { $0.text == preferred }) else {
                 throw SessionError("The saved correction is not a valid candidate.")
             }
-            return { Decided(text: preferred, probabilities: [preferred: 1]) }
+            return ({ Decided(text: preferred, probabilities: [preferred: 1]) }, false)
+        }
+        if allowsEntity, let entity = try RegisteredEntityReading.match(raw: raw, before: before, separator: separator,
+                candidates: candidates, userNames: entities.names, frequencies: wordFrequencies ?? LocalModelService.wordFrequencies()) {
+            return ({ Decided(text: entity.text, probabilities: [entity.text: 1]) }, true)
         }
         let local = try localClient ?? LocalModelService.client()
-        return {
+        return ({
             let result = try await local.decide(raw: raw, before: before, candidates: candidates)
             return Decided(text: result.predicted, probabilities: Dictionary(uniqueKeysWithValues:
                 candidates.map { ($0.text, result.probabilities[$0.id]!) }))
-        }
+        }, false)
     }
 
     private var nextWord: Word? { words.first }
 
     /// The decisions the next word needs: one, or one per interpretation of the recent commits.
-    private func nextRequests() throws -> (word: Word, requests: [@Sendable () async throws -> Decided])? {
+    private func nextRequests() throws -> (word: Word, requests: [DecisionRequest])? {
         guard let word = nextWord else { return nil }
         if !PriorWordCorrectionSettings.enabled(in: previewDefaults) { reconsideration = nil }
-        guard let recent = reconsideration else { return (word, [try decision(for: word.raw, before: context)]) }
-        return (word, try [recent.decided, recent.other].map { chain in
-            try decision(for: word.raw, before: String((recent.before + zip(chain, recent.words).map { $0 + $1.separator }.joined()).suffix(120)))
-        })
+        let before = reconsideration.map { String(($0.before + $0.text).suffix(120)) } ?? context
+        let decided = try decision(for: word.raw, before: before, separator: word.separator)
+        if decided.locksSpelling { reconsideration = nil }
+        guard let recent = reconsideration else { return (word, [decided.request]) }
+        let alternateContext = String((recent.before + zip(recent.other, recent.words).map { $0 + $1.separator }.joined()).suffix(120))
+        let alternate = try decision(for: word.raw, before: alternateContext, separator: word.separator, allowsEntity: false)
+        return (word, [decided.request, alternate.request])
     }
 
     /// Commits each word immediately; only internal records wait for a confident following word.

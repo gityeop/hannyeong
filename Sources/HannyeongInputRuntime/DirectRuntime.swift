@@ -9,8 +9,11 @@ actor DirectRuntime {
     private let correctionsURL: URL
     private let frequencies: WordFrequencies
     private let reloadCorrections: Bool
+    private let entities: RegisteredEntitySettings
 
-    init(resources: URL, personalDirectory: URL, memory: CorrectionMemory) throws {
+    init(resources: URL, personalDirectory: URL, memory: CorrectionMemory,
+         entities: RegisteredEntitySettings = .init()) throws {
+        self.entities = entities
         let saved = try JSONDecoder().decode(LocalRuntimeConfiguration.self,
             from: Data(contentsOf: resources.appendingPathComponent("local-runtime.json")))
         let runtime = LocalRuntimeConfiguration(
@@ -26,7 +29,9 @@ actor DirectRuntime {
         self.frequencies = try WordFrequencies.load(resources.appendingPathComponent("rule-lexicon.json"))
     }
 
-    init(client: LocalDecisionClient, frequencies: WordFrequencies, correctionsURL: URL, memory: CorrectionMemory) {
+    init(client: LocalDecisionClient, frequencies: WordFrequencies, correctionsURL: URL, memory: CorrectionMemory,
+         entities: RegisteredEntitySettings = .init()) {
+        self.entities = entities
         self.client = client
         self.frequencies = frequencies
         self.correctionsURL = correctionsURL
@@ -38,29 +43,39 @@ actor DirectRuntime {
         if let text = request.manualText {
             return .boundary(.init(text: text, replacement: nil, next: nil))
         }
-        let current = try await reading(raw: request.raw, before: request.before)
-        guard let separator = request.separator else { return .live(try .init(text: current.text, raw: request.raw)) }
-        guard request.backfillEnabled else { return .boundary(.init(text: current.text, replacement: nil, next: nil)) }
+        if reloadCorrections { try reloadMemory() }
+        let candidates = try CandidateBuilder.candidates(for: request.raw, includeSplits: true)
+        let current = try await reading(raw: request.raw, before: request.before, candidates: candidates,
+                                        separator: request.separator, allowsEntity: true)
+        guard let separator = request.separator else { return .live(try .init(text: current.reading.text, raw: request.raw)) }
+        guard request.backfillEnabled, !current.locksSpelling else {
+            return .boundary(.init(text: current.reading.text, replacement: nil, next: nil))
+        }
         let alternate: DirectBackfill.Reading?
         if let recent = request.recent {
-            alternate = try await reading(raw: request.raw, before: recent.alternateContext)
+            alternate = try await reading(raw: request.raw, before: recent.alternateContext, candidates: candidates,
+                                          separator: separator, allowsEntity: false).reading
         } else { alternate = nil }
         return .boundary(try DirectBackfill.resolve(word: .init(raw: request.raw, separator: separator),
-            before: request.before, previous: request.recent, decided: current, alternate: alternate, frequencies: frequencies))
+            before: request.before, previous: request.recent, decided: current.reading, alternate: alternate, frequencies: frequencies))
     }
 
-    private func reading(raw: String, before: String) async throws -> DirectBackfill.Reading {
-        if reloadCorrections { try reloadMemory() }
-        let candidates = try CandidateBuilder.candidates(for: raw, includeSplits: true)
+    private func reading(raw: String, before: String, candidates: [Candidate], separator: String?,
+                         allowsEntity: Bool) async throws -> (reading: DirectBackfill.Reading, locksSpelling: Bool) {
         if let preferred = memory.preferred(raw: raw, before: before) {
             guard candidates.contains(where: { $0.text == preferred }) else {
                 throw DirectFailure(detail: "The saved correction is not a valid direct-input candidate.")
             }
-            return .init(text: preferred, probabilities: [preferred: 1])
+            return (.init(text: preferred, probabilities: [preferred: 1]), false)
+        }
+        if allowsEntity, let entity = try RegisteredEntityReading.match(raw: raw, before: before, separator: separator,
+                                                                        candidates: candidates, userNames: entities.names,
+                                                                        frequencies: frequencies) {
+            return (.init(text: entity.text, probabilities: [entity.text: 1]), true)
         }
         let decision = try await client.decide(raw: raw, before: before, candidates: candidates)
-        return .init(text: decision.predicted, probabilities: Dictionary(uniqueKeysWithValues:
-            candidates.map { ($0.text, decision.probabilities[$0.id]!) }))
+        return (.init(text: decision.predicted, probabilities: Dictionary(uniqueKeysWithValues:
+            candidates.map { ($0.text, decision.probabilities[$0.id]!) })), false)
     }
 
     func correct(_ target: DirectSession.FeedbackTarget, preferred: String) async throws {

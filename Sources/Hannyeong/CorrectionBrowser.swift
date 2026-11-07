@@ -3,20 +3,42 @@ import HannyeongCore
 
 @MainActor
 final class CorrectionsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+    private enum Row: Equatable {
+        case correction(CorrectionExample)
+        case entity(String)
+
+        var correction: CorrectionExample? {
+            if case .correction(let entry) = self { return entry }
+            return nil
+        }
+
+        var searchFields: [String] {
+            switch self {
+            case .correction(let entry): [entry.raw, entry.preferred, entry.rejected, entry.before]
+            case .entity(let name): [name, "엔티티"]
+            }
+        }
+    }
+
     private let store: CorrectionStore
+    private let entities: RegisteredEntitySettings
     private let localClient: LocalDecisionClient?
     private let searchSurface = SettingsSearchSurface()
     private var search: NSTextField { searchSurface.field }
     private let count = NSTextField(labelWithString: "")
     private let table = NSTableView()
     private let detail = CorrectionDetailsView()
+    private let addEntityButton = SettingsActionButton(title: "교정 추가")
     private let deleteButton = SettingsActionButton(title: "선택한 교정 삭제…", destructive: true)
     private var isChanging = false
-    private var entries: [CorrectionExample] = []
-    private var visible: [CorrectionExample] = []
+    private var addingEntity = false
+    private var entries: [Row] = []
+    private var visible: [Row] = []
 
-    init(store: CorrectionStore? = nil, localClient: LocalDecisionClient? = nil) {
+    init(store: CorrectionStore? = nil, localClient: LocalDecisionClient? = nil,
+         entities: RegisteredEntitySettings = .init()) {
         self.store = store ?? .shared
+        self.entities = entities
         self.localClient = localClient
         super.init(nibName: nil, bundle: nil)
     }
@@ -58,7 +80,11 @@ final class CorrectionsViewController: NSViewController, NSTableViewDataSource, 
         deleteButton.target = self
         deleteButton.action = #selector(deleteSelection(_:))
         deleteButton.isEnabled = false
-        let header = NSStackView(views: [title, count, NSView(), refresh, deleteButton])
+        addEntityButton.target = self
+        addEntityButton.action = #selector(addEntity)
+        detail.onEntitySave = { [weak self] name in self?.saveEntity(name) }
+        detail.onEntityCancel = { [weak self] in self?.showSelection() }
+        let header = NSStackView(views: [title, count, NSView(), refresh, addEntityButton, deleteButton])
         header.orientation = .horizontal
         header.spacing = 12
 
@@ -137,7 +163,7 @@ final class CorrectionsViewController: NSViewController, NSTableViewDataSource, 
 
     @objc func reload() {
         do {
-            entries = Array(try store.load().entries.reversed())
+            entries = entities.names.map(Row.entity) + (try store.load().entries.reversed().map(Row.correction))
             filter()
         } catch {
             AppSupport.shared.reportConfigurationError(error)
@@ -158,8 +184,7 @@ final class CorrectionsViewController: NSViewController, NSTableViewDataSource, 
     private func filter() {
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         visible = query.isEmpty ? entries : entries.filter { entry in
-            [entry.raw, entry.preferred, entry.rejected, entry.before]
-                .contains { $0.localizedCaseInsensitiveContains(query) }
+            entry.searchFields.contains { $0.localizedCaseInsensitiveContains(query) }
         }
         count.stringValue = query.isEmpty ? "\(entries.count)개" : "\(visible.count) / \(entries.count)개"
         count.textColor = .secondaryLabelColor
@@ -180,9 +205,18 @@ final class CorrectionsViewController: NSViewController, NSTableViewDataSource, 
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let entry = visible[row]
+        let item = visible[row]
+        let column = tableColumn?.identifier.rawValue
+        if case .entity(let name) = item {
+            switch column {
+            case "raw": return textCell(name)
+            case "scope": return textCell("엔티티", color: .secondaryLabelColor)
+            default: return nil
+            }
+        }
+        guard case .correction(let entry) = item else { return nil }
         let value: String
-        switch tableColumn?.identifier.rawValue {
+        switch column {
         case "raw": value = entry.raw
         case "preferred": value = entry.preferred
         case "rejected": value = entry.rejected
@@ -210,10 +244,14 @@ final class CorrectionsViewController: NSViewController, NSTableViewDataSource, 
             return cell
         default: return nil
         }
+        return textCell(value)
+    }
+
+    private func textCell(_ value: String, color: NSColor = .labelColor) -> NSView {
         let cell = NSView()
         let label = NSTextField(labelWithString: value)
         label.font = .systemFont(ofSize: 13)
-        label.textColor = .labelColor
+        label.textColor = color
         (label.cell as! NSTextFieldCell).backgroundStyle = .normal
         label.lineBreakMode = .byTruncatingTail
         label.toolTip = value
@@ -229,16 +267,39 @@ final class CorrectionsViewController: NSViewController, NSTableViewDataSource, 
 
     func tableViewSelectionDidChange(_ notification: Notification) { showSelection() }
 
-    private var selectedEntries: [CorrectionExample] {
+    private var selectedRows: [Row] {
         table.selectedRowIndexes.filter { visible.indices.contains($0) }.map { visible[$0] }
     }
 
+    private var selectedEntity: String? {
+        let rows = selectedRows
+        guard rows.count == 1, case .entity(let name) = rows[0] else { return nil }
+        return name
+    }
+
     private func showSelection() {
-        let selected = selectedEntries
-        deleteButton.isEnabled = !selected.isEmpty && !isChanging
+        addingEntity = false
+        let rows = selectedRows
+        let selected = rows.compactMap(\.correction)
+        addEntityButton.isEnabled = !isChanging
+        if let name = selectedEntity {
+            deleteButton.isEnabled = !isChanging
+            deleteButton.title = "선택한 엔티티 삭제…"
+            detail.showEntity(name)
+            return
+        }
+        deleteButton.isEnabled = !selected.isEmpty && selected.count == rows.count && !isChanging
         deleteButton.title = selected.count > 1 ? "선택한 \(selected.count)개 삭제…" : "선택한 교정 삭제…"
+        if rows.count > 1, rows.count != selected.count {
+            detail.showMessage("엔티티 이름을 수정하거나 삭제하려면 하나만 선택해 주세요.", title: "선택한 항목")
+            return
+        }
         guard let entry = selected.first else {
-            detail.showMessage(entries.isEmpty ? "아직 저장된 교정이 없습니다." : "검색 결과가 없습니다.")
+            let message: String
+            if entries.isEmpty { message = "아직 저장된 교정이 없습니다." }
+            else if visible.isEmpty { message = "검색 결과가 없습니다." }
+            else { message = "목록에서 교정 또는 엔티티를 선택해 주세요." }
+            detail.showMessage(message)
             return
         }
         if selected.count > 1 {
@@ -250,8 +311,38 @@ final class CorrectionsViewController: NSViewController, NSTableViewDataSource, 
         detail.show(entry)
     }
 
+    @objc private func addEntity() {
+        guard !isChanging else { return }
+        table.deselectAll(nil)
+        addingEntity = true
+        deleteButton.isEnabled = false
+        detail.showEntity(nil)
+        detail.focusEntityName()
+    }
+
+    private func saveEntity(_ input: String) {
+        let original = selectedEntity
+        guard !isChanging, addingEntity || original != nil else { return }
+        do {
+            let name = try entities.save(input, replacing: original)
+            reload()
+            if !visible.contains(.entity(name)) {
+                search.stringValue = ""
+                searchSurface.updateClearButton()
+                filter()
+            }
+            if let row = visible.firstIndex(of: .entity(name)) {
+                table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                table.scrollRowToVisible(row)
+                showSelection()
+            }
+        } catch {
+            detail.showEntityError(error.localizedDescription)
+        }
+    }
+
     @objc private func toggleScope(_ sender: NSButton) {
-        let entry = visible[sender.tag]
+        guard let entry = visible[sender.tag].correction else { return }
         let scope: CorrectionScope = entry.scope == .context ? .always : .context
         table.selectRowIndexes(IndexSet(integer: sender.tag), byExtendingSelection: false)
         isChanging = true
@@ -263,7 +354,7 @@ final class CorrectionsViewController: NSViewController, NSTableViewDataSource, 
                 let updated = try await store.changeScope(of: entry, to: scope, local: local)
                 isChanging = false
                 reload()
-                if let row = visible.firstIndex(of: updated) {
+                if let row = visible.firstIndex(of: .correction(updated)) {
                     table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
                 }
                 showSelection()
@@ -278,8 +369,14 @@ final class CorrectionsViewController: NSViewController, NSTableViewDataSource, 
     }
 
     @objc private func deleteSelection(_ sender: NSButton) {
-        let selected = selectedEntries
-        guard let window = view.window, !selected.isEmpty else { return }
+        guard let window = view.window else { return }
+        if let name = selectedEntity {
+            deleteEntity(name, in: window)
+            return
+        }
+        let rows = selectedRows
+        let selected = rows.compactMap(\.correction)
+        guard !selected.isEmpty, selected.count == rows.count else { return }
         let alert = NSAlert()
         alert.messageText = "선택한 교정 \(selected.count)개를 삭제할까요?"
         let preview = selected.prefix(5).map { "\($0.raw) → \($0.preferred)" }.joined(separator: "\n")
@@ -309,4 +406,21 @@ final class CorrectionsViewController: NSViewController, NSTableViewDataSource, 
             }
         }
     }
+
+    private func deleteEntity(_ name: String, in window: NSWindow) {
+        let alert = NSAlert()
+        alert.messageText = "‘\(name)’ 엔티티를 삭제할까요?"
+        alert.addButton(withTitle: "삭제")
+        alert.addButton(withTitle: "취소")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            do {
+                try self.entities.remove(name)
+                self.reload()
+            } catch {
+                self.detail.showEntityError(error.localizedDescription)
+            }
+        }
+    }
+
 }
