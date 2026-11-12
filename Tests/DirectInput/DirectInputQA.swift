@@ -91,6 +91,7 @@ private final class Harness {
     var errors: [Error] = []
     var wakeCount = 0
     var routeRefreshes = 0
+    var routeMonitor: InputRouteMonitor?
     var keyDurations: [TimeInterval] = []
     var inlineCompletionVisible = false
     var mutations: [String] = []
@@ -147,7 +148,10 @@ private final class Harness {
         text = previous.substring(to: previous.length - count) + replacement
         nativeReplacements += 1
     } : nil,
-    refreshRoute: { [self] in routeRefreshes += 1 })
+    refreshRoute: { [self] reason in
+        routeRefreshes += 1
+        routeMonitor?.refresh(reason)
+    })
 
     func decision(_ request: DirectSession.Snapshot) async throws -> DirectSession.Decision {
         if let runtime {
@@ -218,7 +222,8 @@ private final class Harness {
             inEventTap = true
             var delivered = input.receive(proxy, event.type, event) != nil
             inEventTap = false
-            if delivered, down, nativeMode, focusChecks.hostBundleID == "notion.id" {
+            if delivered, down, nativeMode, targetPID == nil,
+               focusChecks.hostBundleID == "notion.id" || focusChecks.hostBundleID == TypingEngine.clientOwnedBundleID {
                 delivered = !input.receiveNative(event)
             }
             keyDurations.append(CFAbsoluteTimeGetCurrent() - began)
@@ -462,7 +467,62 @@ struct DirectInputQA {
         print("PASS Direct user entity add, rename, removal, and exact corrections")
     }
 
+    @MainActor private static func routeChecksDuringTyping() async throws {
+        for focusChanged in [false, true] {
+            let h = Harness(nativeMode: true)
+            h.input.enableForQA()
+            let pid = h.pid
+            let first = FocusChecks()
+            first.blockFirstCapture()
+            let next = FocusChecks()
+            next.blockFirstCapture()
+            var routeUpdates: [Bool] = []
+            let monitor = InputRouteMonitor(sourceID: "QA", checking: { h.input.beginRouteCheck() }) { target, known, _ in
+                if known { routeUpdates.append(target != nil) }
+                h.input.updateRoute(target, known: known)
+            }
+            h.routeMonitor = monitor
+            defer {
+                monitor.stop()
+                h.routeMonitor = nil
+                first.releaseCapture()
+                next.releaseCapture()
+            }
+            monitor.startForQA {
+                let capture = first.captureCount == 0 ? first : next
+                return .init(pid: pid, target: try capture.capture(pid))
+            }
+            for _ in 0..<100 where first.captureCount == 0 {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            try require(first.captureCount > 0, "The delayed focus check did not start")
+            h.type("dkssud")
+            try require(h.text == "dkssud", "The input route must be confirmed before converting")
+            if focusChanged {
+                next.textEligible = false
+                monitor.refresh()
+                next.releaseCapture()
+            }
+            first.releaseCapture()
+            for _ in 0..<100 where routeUpdates.isEmpty {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            if focusChanged {
+                try require(routeUpdates == [false] && h.text == "dkssud" && h.outputEventCount == 0,
+                            "A stale text route was accepted after focus moved")
+            } else {
+                try require(routeUpdates == [true], "Typing invalidated a valid in-flight focus check")
+                try await h.resolve("안녕")
+                h.flushWake()
+                try require(h.text == "안녕" && h.errors.isEmpty, "The confirmed field did not convert the typed word")
+            }
+        }
+        print("PASS typing leaves a pending focus check intact; a real focus change discards the stale route")
+    }
+
     @MainActor static func run() async throws {
+        try await routeChecksDuringTyping()
+        try await clientOwnedDeliveryChecks()
         try await eventTapRecoveryChecks()
         try await notionNativeDeliveryChecks()
         try await savePanelFocusChecks()
@@ -1222,20 +1282,39 @@ struct DirectInputQA {
     @MainActor static func processEventTapRecoveryChecks() throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
         for options in [CGEventTapOptions.defaultTap, .listenOnly] {
+            let observer = options == .listenOnly
             guard let tap = CGEvent.tapCreateForPid(pid: getpid(), place: .tailAppendEventTap, options: options,
                 eventsOfInterest: 1 << CGEventType.keyDown.rawValue,
                 callback: { _, _, event, _ in Unmanaged.passUnretained(event) }, userInfo: nil) else {
                 throw DirectFailure(detail: "QA could not create its process-local event tap (options=\(options.rawValue))")
             }
             defer { CFMachPortInvalidate(tap) }
+            let h = Harness(nativeMode: true)
+            h.focusChecks.hostBundleID = TypingEngine.clientOwnedBundleID
+            h.input.enableForQA(keyboardTap: observer ? nil : tap, observerTap: observer ? tap : nil)
+            h.input.clientOwnedPID = h.pid
+            h.input.setNativeClientRoute(true)
+            let disabled = CGEvent(source: nil)!
+            disabled.type = .tapDisabledByTimeout
             for _ in 0..<2 {
                 CGEvent.tapEnable(tap: tap, enable: false)
                 try require(!CGEvent.tapIsEnabled(tap: tap), "QA did not disable its real event tap")
-                try DirectInputTap.resumeEventTap(tap, failure: "QA real event tap could not resume")
-                try require(CGEvent.tapIsEnabled(tap: tap), "The real event tap remained disabled after resumption")
+                if observer { h.input.observeCommand(disabled.type, disabled) }
+                else { _ = h.input.receive(h.proxy, disabled.type, disabled) }
+                try require(CGEvent.tapIsEnabled(tap: tap) && h.input.enabled && h.errors.isEmpty,
+                            "The timeout stopped typing instead of re-enabling the tap")
+                let previous = h.text
+                h.type("dkssud")
+                try require(h.text == previous + "안녕", "Hangul did not compose after the timeout")
             }
+            CGEvent.tapEnable(tap: tap, enable: false)
+            disabled.type = .tapDisabledByUserInput
+            if observer { h.input.observeCommand(disabled.type, disabled) }
+            else { _ = h.input.receive(h.proxy, disabled.type, disabled) }
+            try require(!CGEvent.tapIsEnabled(tap: tap) && !h.input.enabled && h.errors.count == 1,
+                        "A tap disabled by user input should remain stopped")
         }
-        print("PASS real process-local keyboard/observer CGEventTap disabled then resumed twice; no key posting or input-source switch")
+        print("PASS real process-local keyboard/observer taps resume and compose Hangul after timeout; user-disabled taps remain stopped")
     }
 
     @MainActor static func eventTapRecoveryChecks() async throws {
@@ -1390,6 +1469,32 @@ struct DirectInputQA {
             h.input.reset(); try await h.resolve("s")
         }
         print("PASS save filename/hosted sheet: missing AXWindow, AppKit keyboard transport, automatic conversion/right Command, native reversal without selection events, ordinary sheets unchanged, foreign PID and changed field/window/sheet rejection, AX errors propagate")
+    }
+
+    @MainActor static func clientOwnedDeliveryChecks() async throws {
+        let h = Harness(nativeMode: true)
+        h.focusChecks.hostBundleID = TypingEngine.clientOwnedBundleID
+        h.focusChecks.failsAX = true
+        h.input.enableForQA()
+        h.input.clientOwnedPID = h.pid
+        h.input.setNativeClientRoute(true)
+        h.input.updateRoute(nil, known: false)
+        h.input.beginRouteCheck()
+        h.key("d")
+        try require(h.text == "ㅇ" && h.nativeReplacements == 1 && h.outputEventCount == 0,
+                    "The first IMK key did not compose before AX focus was available")
+        try await h.waitForRequest()
+        h.input.updateRoute(nil, known: true)
+        h.type("kssud")
+        try require(h.text == "안녕" && h.focusChecks.captureCount == 0,
+                    "A background focus change interrupted the IMK word or the key waited for AX")
+        h.key("", code: 36)
+        try require(h.submitted == ["안녕"], "IMK input delayed or duplicated Return")
+        h.input.setNativeClientRoute(false)
+        try await h.resolve("d")
+        try require(h.text.isEmpty && h.errors.isEmpty,
+                    "A decision from the old IMK client changed text after deactivation")
+        print("PASS Kakao IMK ownership: first key composes without AX, Return passes once, and late results expire on deactivation")
     }
 
     @MainActor static func notionNativeDeliveryChecks() async throws {

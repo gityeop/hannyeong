@@ -87,12 +87,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let connectionName = Bundle.main.object(forInfoDictionaryKey: "InputMethodConnectionName") as? String,
               !connectionName.isEmpty else {
             Logger(subsystem: bundleID, category: "Lifecycle").error("InputMethodConnectionName is missing")
-            AppSupport.shared.showError("입력기를 시작하지 못했습니다. 한녕을 다시 설치해 주세요.")
             return
         }
         server = IMKServer(name: connectionName, bundleIdentifier: bundleID)
         guard server != nil else {
-            AppSupport.shared.showError("입력기를 시작하지 못했습니다. 한녕을 다시 실행해 주세요.")
+            Logger(subsystem: bundleID, category: "Lifecycle").error("IMKServer initialization failed")
             return
         }
         AppSupport.shared.prepareLaunch(arguments: CommandLine.arguments)

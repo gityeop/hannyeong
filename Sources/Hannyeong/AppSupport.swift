@@ -7,7 +7,6 @@ final class AppSupport: NSObject {
 
     private let logger = Logger(subsystem: "com.yeop.inputmethod.Hannyeong", category: "Configuration")
     private lazy var settings = SettingsWindowController()
-    private var notice: NoticePanel?
 
     private override init() {
         super.init()
@@ -29,7 +28,6 @@ final class AppSupport: NSObject {
                 _ = try await local.prepare()
             } catch {
                 reportConfigurationError(error)
-                showError("입력기를 준비하지 못했습니다. 한녕을 다시 실행해 주세요.")
             }
         }
     }
@@ -58,23 +56,9 @@ final class AppSupport: NSObject {
         if !hasWindow { NSApp.setActivationPolicy(.accessory) }
     }
 
-    func showError(_ message: String, at caretRect: NSRect? = nil) {
-        if notice == nil { notice = NoticePanel() }
-        notice?.show(message, at: caretRect)
-    }
-
-    func clearError() {
-        notice?.hide()
-    }
-
-    func dismissError() -> Bool {
-        guard notice?.isVisible == true else { return false }
-        notice?.hide()
-        return true
-    }
-
     func reportConfigurationError(_ error: Error) {
-        logger.error("Configuration operation failed: \(String(describing: error), privacy: .private)")
+        let failure = error as NSError
+        logger.error("Configuration operation failed; domain=\(failure.domain, privacy: .public) code=\(failure.code) detail=\(error.localizedDescription, privacy: .private)")
     }
 
     private func installEditingMenu() {

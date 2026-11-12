@@ -5,7 +5,7 @@ import HannyeongInputRuntime
 import HannyeongCore
 import os
 
-/// IMK supplies source identity and owns Notion keys; the shared tap owns other hosts.
+/// IMK supplies source identity and owns KakaoTalk and Notion keys.
 @MainActor
 final class NativeInputEngine: NSObject {
     static let shared = NativeInputEngine()
@@ -13,9 +13,10 @@ final class NativeInputEngine: NSObject {
     private let logger = Logger(subsystem: "com.yeop.inputmethod.Hannyeong", category: "TypingEngine")
     private var engine: TypingEngine?
     private var failed = false
+    private var waitingForKeyboardAccess = false
     private var prepared = false
     private weak var inputClient: (any IMKTextInput)?
-    private weak var notionOutput: NativeNotionOutput?
+    private weak var nativeOutput: NativeNotionOutput?
     var experimentalEnabled: Bool { UserDefaults.standard.bool(forKey: CompositionPreviewSettings.liveEnabledKey) }
 
     func prepare() {
@@ -34,18 +35,16 @@ final class NativeInputEngine: NSObject {
                     let elapsed = (DispatchTime.now().uptimeNanoseconds - began) / 1_000_000
                     self.logger.notice("Native sheet language reversal; removedUTF16=\(expected.utf16.count) insertedUTF16=\(replacement.utf16.count) ms=\(elapsed)")
                 }, replaceNativeText: { [weak self] deletedUTF16, text in
-                    guard let output = self?.notionOutput else {
-                        throw NativeNotionOutput.Failure(errorDescription: "The active Notion controller is unavailable.")
+                    guard let output = self?.nativeOutput else {
+                        throw NativeNotionOutput.Failure(errorDescription: "The active native input controller is unavailable.")
                     }
                     try output.replace(deletingUTF16: deletedUTF16, with: text)
-                }, resetNativeText: { [weak self] in self?.notionOutput?.reset() },
-                advanceNativeText: { [weak self] in self?.notionOutput?.advance($0) }) { [weak self] in self?.report($0) }
+                }, resetNativeText: { [weak self] in self?.nativeOutput?.reset() },
+                advanceNativeText: { [weak self] in self?.nativeOutput?.advance($0) }) { [weak self] in self?.report($0) }
             DistributedNotificationCenter.default().addObserver(self, selector: #selector(sourceChanged),
                 name: Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged),
                 name: UserDefaults.didChangeNotification, object: nil)
-            NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(focusChanged),
-                name: NSWorkspace.didActivateApplicationNotification, object: nil)
             configure()
             synchronizeSource()
             logger.notice("Shared nonblocking typing engine prepared; no IMK key queue or committed-text confirmation")
@@ -53,26 +52,43 @@ final class NativeInputEngine: NSObject {
     }
 
     func activate(client: any IMKTextInput) {
+        if let output = nativeOutput, output.usesClientRoute, !output.belongsTo(client) {
+            deactivateNativeOutput(output)
+        }
         inputClient = client
         configure()
         synchronizeSource()
     }
 
-    func handleNotion(_ event: NSEvent, output: NativeNotionOutput) -> Bool {
-        guard let engine, engine.enabled, let keyboardEvent = event.cgEvent else { return false }
-        if notionOutput !== output {
-            engine.reset()
-            output.reset()
-            notionOutput = output
-            logger.notice("Notion controller bound for native keys; sourcePID=\(keyboardEvent.getIntegerValueField(.eventSourceUnixProcessID)) targetPID=\(keyboardEvent.getIntegerValueField(.eventTargetUnixProcessID))")
+    func handleNative(_ event: NSEvent, output: NativeNotionOutput) -> Bool {
+        if IsSecureEventInputEnabled() {
+            deactivateNativeOutput(output)
+            return false
         }
+        guard let engine, engine.enabled, let keyboardEvent = event.cgEvent else { return false }
+        if output.usesClientRoute {
+            guard let inputClient, output.belongsTo(inputClient) else { return false }
+        }
+        if nativeOutput !== output {
+            if let current = nativeOutput { deactivateNativeOutput(current) }
+            nativeOutput = output
+            if !output.usesClientRoute { engine.reset() }
+            logger.notice("Native controller bound for IMK keys; clientOwned=\(output.usesClientRoute) sourcePID=\(keyboardEvent.getIntegerValueField(.eventSourceUnixProcessID)) targetPID=\(keyboardEvent.getIntegerValueField(.eventTargetUnixProcessID))")
+        }
+        if output.usesClientRoute { engine.setNativeClientRoute(true) }
         return engine.handleNative(keyboardEvent)
     }
 
-    func deactivateNotion(_ output: NativeNotionOutput) {
-        guard notionOutput === output else { return }
+    func commitNativeComposition(_ output: NativeNotionOutput) {
+        guard nativeOutput === output else { return }
         engine?.reset()
-        notionOutput = nil
+    }
+
+    func deactivateNativeOutput(_ output: NativeNotionOutput) {
+        guard nativeOutput === output else { return }
+        if output.usesClientRoute { engine?.setNativeClientRoute(false) }
+        else { engine?.reset() }
+        nativeOutput = nil
     }
 
     func reset() { engine?.reset() }
@@ -82,6 +98,9 @@ final class NativeInputEngine: NSObject {
         engine?.resumeAfterSecureInput()
     }
     func hidePalettes() { engine?.dismissCandidates() }
+    func refreshPermissions() {
+        if waitingForKeyboardAccess { synchronizeSource() }
+    }
     func close() {
         do { try engine?.close() } catch { report(error) }
     }
@@ -97,8 +116,6 @@ final class NativeInputEngine: NSObject {
         configure()
         if !experimentalEnabled { synchronizeSource() }
     }
-    @objc private func focusChanged() { recheckInputTarget() }
-
     private func configure() {
         let defaults = UserDefaults.standard
         engine?.configure(live: true,
@@ -113,8 +130,15 @@ final class NativeInputEngine: NSObject {
             if selected == sourceID && experimentalEnabled {
                 guard !failed else { return }
                 if !engine.enabled {
+                    guard TypingEngine.hasKeyboardAccess else {
+                        if !waitingForKeyboardAccess {
+                            logger.error("Accessibility permission is required for native typing")
+                        }
+                        waitingForKeyboardAccess = true
+                        return
+                    }
+                    waitingForKeyboardAccess = false
                     try engine.start()
-                    AppSupport.shared.clearError()
                     logger.notice("Native nonblocking typing enabled")
                 }
             } else {
@@ -134,9 +158,8 @@ final class NativeInputEngine: NSObject {
             logger.error("Native save-field replacement failed: \(failure.localizedDescription, privacy: .public)")
         }
         else if let failure = error as? NativeNotionOutput.Failure {
-            logger.error("Native Notion replacement failed: \(failure.localizedDescription, privacy: .public)")
+            logger.error("Native text replacement failed: \(failure.localizedDescription, privacy: .public)")
         }
         else { logger.error("Native typing error: \(String(describing: error), privacy: .private)") }
-        AppSupport.shared.showError("자동 입력 처리를 중단했습니다. 입력 소스를 다시 선택해 주세요.")
     }
 }

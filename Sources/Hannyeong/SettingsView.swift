@@ -53,7 +53,9 @@ struct SettingsView: View {
 
             Group {
                 switch section {
-                case .general: GeneralSettingsView(animationsActive: windowActivity.isVisible)
+                case .general: GeneralSettingsView(animationsActive: windowActivity.isVisible,
+                                                   hasAccessibility: windowActivity.hasAccessibility,
+                                                   hasKeyboardAccess: windowActivity.hasKeyboardAccess)
                 case .corrections: CorrectionsSettingsPane(controller: corrections)
                 case .information: InformationSettingsView()
                 }
@@ -73,6 +75,8 @@ struct SettingsView: View {
 @MainActor
 private struct GeneralSettingsView: View {
     let animationsActive: Bool
+    let hasAccessibility: Bool
+    let hasKeyboardAccess: Bool
     @AppStorage("composition.previewEnglish") private var previewEnglish = false
     @AppStorage(CompositionPreviewSettings.liveEnabledKey) private var liveDetectionEnabled = false
     @AppStorage(PriorWordCorrectionSettings.enabledKey) private var priorWordCorrectionEnabled = true
@@ -89,6 +93,19 @@ private struct GeneralSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 Text("일반").font(.system(size: 22, weight: .bold))
+                if !hasAccessibility || (liveDetectionEnabled && !hasKeyboardAccess) {
+                    SettingsCard {
+                        HStack(spacing: 16) {
+                            Text("한녕의 손쉬운 사용 권한을 허용해 주세요.").font(.system(size: 14))
+                            Spacer()
+                            Button("손쉬운 사용 설정 열기") {
+                                CommittedTextSelection.requestAccess(requiresKeyboardPosting: liveDetectionEnabled)
+                            }
+                            .buttonStyle(SettingsSmallButtonStyle())
+                            .accessibilityIdentifier("allow-committed-text-editing")
+                        }
+                    }
+                }
                 SettingsCard {
                     VStack(spacing: 14) {
                         HStack {
@@ -209,15 +226,6 @@ private struct InformationSettingsView: View {
                     Spacer()
                 }
                 .padding(.vertical, 8)
-            }
-            SettingsCard {
-                HStack(spacing: 16) {
-                    Text("앞 단어 교정을 위한 손쉬운 사용 허용하기").font(.system(size: 16, weight: .semibold))
-                    Spacer()
-                    Button("손쉬운 사용 허용...") { CommittedTextSelection.requestAccess() }
-                        .buttonStyle(SettingsSmallButtonStyle())
-                        .accessibilityIdentifier("allow-committed-text-editing")
-                }
             }
             UpdateSettingsView(updates: .shared)
             Spacer(minLength: 0)

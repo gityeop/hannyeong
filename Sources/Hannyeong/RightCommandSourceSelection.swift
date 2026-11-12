@@ -61,13 +61,11 @@ final class RightCommandSourceSelection {
             .takeRetainedValue() as! [TISInputSource]
         guard let source = matches.first else {
             logger.error("Right Command source selection: 한녕 is not enabled")
-            AppSupport.shared.showError("한녕이 입력 소스 목록에 없습니다. 시스템 설정에서 한녕을 추가해 주세요.")
             return
         }
         let status = TISSelectInputSource(source)
         guard status == noErr else {
             logger.error("Right Command source selection failed: status=\(status)")
-            AppSupport.shared.showError("한녕으로 전환하지 못했습니다. (status \(status))")
             return
         }
         logger.notice("Right Command selected 한녕")

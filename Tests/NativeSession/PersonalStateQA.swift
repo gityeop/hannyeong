@@ -37,7 +37,7 @@ private let ruleLexicon = try! WordFrequencies.load(URL(fileURLWithPath: ".build
                                              throw LocalDecisionError(detail: "Native commit suffix differs")
                                          }
                                          return end
-                                     }, forwardHostEvent: { [view] event in view.applyHostEvent(event) }) { [weak self] in self?.errors.append($0) }
+                                     }, forwardHostEvent: { [view] event in view.applyHostEvent(event) }) { [weak self] in self?.errors.append($0.localizedDescription) }
     }
     func key(_ text: String, code: UInt16 = 0) {
         let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: text.first?.isUppercase == true ? .shift : [],

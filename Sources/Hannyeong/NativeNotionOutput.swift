@@ -10,9 +10,18 @@ final class NativeNotionOutput {
     }
 
     private let client: any IMKTextInput
+    let usesClientRoute: Bool
     private var caret: Int?
 
-    init(client: any IMKTextInput) { self.client = client }
+    init(client: any IMKTextInput, usesClientRoute: Bool = false) {
+        self.client = client
+        self.usesClientRoute = usesClientRoute
+    }
+
+    func belongsTo(_ client: any IMKTextInput) -> Bool {
+        (self.client as AnyObject) === (client as AnyObject)
+    }
+
     func reset() { caret = nil }
     func advance(_ text: String) {
         if let caret { self.caret = caret + text.utf16.count }
