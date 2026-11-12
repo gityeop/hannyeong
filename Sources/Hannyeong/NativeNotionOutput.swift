@@ -23,8 +23,11 @@ final class NativeNotionOutput {
     }
 
     func reset() { caret = nil }
-    func advance(_ text: String) {
-        if let caret { self.caret = caret + text.utf16.count }
+    func advance(_ text: String) { advance(utf16: text.utf16.count) }
+    /// A negative count follows a host Backspace over owned text.
+    func advance(utf16 count: Int) {
+        guard let caret else { return }
+        self.caret = caret + count >= 0 ? caret + count : nil
     }
 
     func replace(deletingUTF16 length: Int, with text: String) throws {

@@ -28,7 +28,7 @@ public final class TypingEngine {
                               replaceNativeSheet: ((String, String) throws -> Void)? = nil,
                               replaceNativeText: ((Int, String) throws -> Void)? = nil,
                               resetNativeText: @escaping () -> Void = {},
-                              advanceNativeText: @escaping (String) -> Void = { _ in },
+                              advanceNativeText: @escaping (Int) -> Void = { _ in },
                               failure: @escaping (Error) -> Void) throws -> TypingEngine {
         try TypingEngine(runtime: DirectRuntime(client: client, frequencies: frequencies, correctionsURL: correctionsURL, memory: memory),
                          sourceID: "com.yeop.inputmethod.Hannyeong", native: true, changed: { _ in }, failure: failure,
@@ -41,7 +41,7 @@ public final class TypingEngine {
                  replaceNativeSheet: ((String, String) throws -> Void)? = nil,
                  replaceNativeText: ((Int, String) throws -> Void)? = nil,
                  resetNativeText: @escaping () -> Void = {},
-                 advanceNativeText: @escaping (String) -> Void = { _ in }) throws {
+                 advanceNativeText: @escaping (Int) -> Void = { _ in }) throws {
         self.runtime = runtime
         input = try DirectInputTap(decide: { try await runtime.decide($0) }, changed: changed, failure: failure,
             showFeedback: { [weak self] candidates, bounds in
