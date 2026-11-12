@@ -40,7 +40,7 @@ final class NativeInputEngine: NSObject {
                     }
                     try output.replace(deletingUTF16: deletedUTF16, with: text)
                 }, resetNativeText: { [weak self] in self?.nativeOutput?.reset() },
-                advanceNativeText: { [weak self] in self?.nativeOutput?.advance($0) }) { [weak self] in self?.report($0) }
+                advanceNativeText: { [weak self] in self?.nativeOutput?.advance(utf16: $0) }) { [weak self] in self?.report($0) }
             DistributedNotificationCenter.default().addObserver(self, selector: #selector(sourceChanged),
                 name: Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged),

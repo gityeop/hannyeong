@@ -301,7 +301,7 @@ struct DirectSession {
         return edit
     }
 
-    private static func difference(from old: String, to new: String) -> Edit {
+    static func difference(from old: String, to new: String) -> Edit {
         let shared = zip(old, new).prefix(while: { $0.0 == $0.1 }).count
         return Edit(deleteCount: old.count - shared, text: String(new.dropFirst(shared)),
                     deleteUTF16Count: String(old.dropFirst(shared)).utf16.count)

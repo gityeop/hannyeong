@@ -103,6 +103,7 @@ private final class Harness {
     var inEventTap = false
     var nativeReplacements = 0
     var failNativeReplacement = false
+    var ignoredEmptyNativeCommits = 0
     var nativeSheetReplacements = 0
     var failsNativeSheetReplacement = false
     var feedback: [String] = []
@@ -143,6 +144,8 @@ private final class Harness {
     replaceNativeText: nativeMode ? { [self] count, replacement in
         try require(!inEventTap, "Notion IPC ran while the event tap held the host queue")
         if failNativeReplacement { throw DirectFailure(detail: "QA Notion replacement failed") }
+        // Observed in KakaoTalk 2026-11-12: insertText("") with a replacement range changes nothing.
+        if replacement.isEmpty { ignoredEmptyNativeCommits += 1; return }
         let previous = text as NSString
         try require(previous.length >= count, "Notion replacement exceeded the UTF16 suffix")
         text = previous.substring(to: previous.length - count) + replacement
@@ -229,6 +232,9 @@ private final class Harness {
             keyDurations.append(CFAbsoluteTimeGetCurrent() - began)
             if delivered {
                 if down { deliveredPhysical.append(text) }
+                host(event, physicalText: text)
+            } else if down, nativeMode, physicalCode == 51, focusChecks.hostBundleID == "notion.id" {
+                // Observed in Notion 2026-11-12: its key handler deletes even when IMK consumes Backspace.
                 host(event, physicalText: text)
             }
         }
@@ -522,6 +528,7 @@ struct DirectInputQA {
 
     @MainActor static func run() async throws {
         try await routeChecksDuringTyping()
+        try await nativeBackspaceChecks()
         try await clientOwnedDeliveryChecks()
         try await eventTapRecoveryChecks()
         try await notionNativeDeliveryChecks()
@@ -1469,6 +1476,43 @@ struct DirectInputQA {
             h.input.reset(); try await h.resolve("s")
         }
         print("PASS save filename/hosted sheet: missing AXWindow, AppKit keyboard transport, automatic conversion/right Command, native reversal without selection events, ordinary sheets unchanged, foreign PID and changed field/window/sheet rejection, AX errors propagate")
+    }
+
+    @MainActor static func nativeBackspaceChecks() async throws {
+        for bundleID in [TypingEngine.clientOwnedBundleID, "notion.id"] {
+            let h = Harness(nativeMode: true)
+            h.focusChecks.hostBundleID = bundleID
+            h.input.enableForQA()
+            if bundleID == TypingEngine.clientOwnedBundleID {
+                h.input.clientOwnedPID = h.pid
+                h.input.setNativeClientRoute(true)
+            } else {
+                h.input.updateRoute(try h.focusChecks.capture(h.pid), known: true)
+            }
+            h.input.configure(live: true, fixedEnglish: false, backfill: true)
+            h.text = "앞 "
+            h.type("ajrdj"); h.key("T", flags: .maskShift); h.type("ekggg")
+            try require(h.text == "앞 먹었닿ㅎㅎ", "\(bundleID) did not compose the fixture: \(h.text)")
+            var seen: [String] = []
+            for _ in 0..<5 {
+                h.key("", code: 51)
+                try await Task.sleep(for: .milliseconds(5))
+                seen.append(h.text)
+            }
+            try require(seen == ["앞 먹었닿ㅎ", "앞 먹었닿", "앞 먹었다", "앞 먹었ㄷ", "앞 먹었"],
+                        "\(bundleID) Backspace did not remove one trailing unit per press: \(seen)")
+            h.type("djqhfrp")
+            try require(h.text == "앞 먹었어볼게", "\(bundleID) did not compose the second fixture: \(h.text)")
+            h.key("", code: 51)
+            try await Task.sleep(for: .milliseconds(5))
+            try require(h.text == "앞 먹었어볽", "\(bundleID) Backspace across two syllables lost text: \(h.text)")
+            h.key("", code: 51); h.key("", code: 51); h.key("", code: 51); h.key("", code: 51)
+            try await Task.sleep(for: .milliseconds(5))
+            try require(h.text == "앞 먹었어" && h.ignoredEmptyNativeCommits == 0 && h.errors.isEmpty && h.input.enabled,
+                        "\(bundleID) typing after Backspace left its owned caret: \(h.text)")
+            h.input.reset()
+        }
+        print("PASS Kakao/Notion IMK Backspace: one trailing unit per press with hosts that ignore empty commits, typing continues at the end")
     }
 
     @MainActor static func clientOwnedDeliveryChecks() async throws {

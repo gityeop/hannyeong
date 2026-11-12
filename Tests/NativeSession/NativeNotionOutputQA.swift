@@ -48,6 +48,15 @@ private final class NotionView: NativeTextView {
         try emptyOutput.replace(deletingUTF16: 1, with: "타")
         precondition(empty.string == "타", "An empty field required a cursor before the first key")
 
+        let erased = NotionView(frame: .zero)
+        let erasedOutput = NativeNotionOutput(client: erased)
+        try erasedOutput.replace(deletingUTF16: 0, with: "닿")
+        try erasedOutput.replace(deletingUTF16: 0, with: "ㅎ")
+        erased.deleteBackward(nil); erasedOutput.advance(utf16: -1)
+        erased.reportedSelection = NSRange(location: 0, length: 0)
+        try erasedOutput.replace(deletingUTF16: 1, with: "다")
+        precondition(erased.string == "다", "A host Backspace left the owned caret behind the deleted character")
+
         output.reset()
         view.setSelectedRange(NSRange(location: 3, length: 3))
         try output.replace(deletingUTF16: 0, with: "안녕")

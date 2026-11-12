@@ -28,7 +28,7 @@ final class DirectInputTap {
     private let replaceNativeSheet: ((String, String) throws -> Void)?
     private let replaceNativeText: ((Int, String) throws -> Void)?
     private let resetNativeText: () -> Void
-    private let advanceNativeText: (String) -> Void
+    private let advanceNativeText: (Int) -> Void
     private let latencyLogger: Logger
     private var lastRoutingState: String?
     private var observedFirstCommand = false
@@ -53,6 +53,8 @@ final class DirectInputTap {
     private var ready: (DirectSession.Snapshot, DirectSession.Decision, DirectFocus)?
     private var lastDecided: DirectSession.Snapshot?
     private var basicDecision: (DirectSession.Snapshot, DirectSession.Projection)?
+    /// The rest of a Notion Backspace, applied once Notion has removed its own character.
+    private var nativeRepair: DirectSession.Edit?
     private var rightCommand = DirectRightCommandTap()
     private var singleTimer: DispatchWorkItem?
     private var singleReady = false
@@ -92,7 +94,7 @@ final class DirectInputTap {
          replaceNativeSheet: ((String, String) throws -> Void)? = nil,
          replaceNativeText: ((Int, String) throws -> Void)? = nil,
          resetNativeText: @escaping () -> Void = {},
-         advanceNativeText: @escaping (String) -> Void = { _ in },
+         advanceNativeText: @escaping (Int) -> Void = { _ in },
          invalidateRoute: @escaping () -> Void = {},
          refreshRoute: @escaping (InputRouteMonitor.RefreshReason) -> Void = { _ in }) throws {
         keyboard = try KeyboardInput()
@@ -251,6 +253,7 @@ final class DirectInputTap {
         ready = nil
         lastDecided = nil
         basicDecision = nil
+        nativeRepair = nil
         session.reset()
         resetNativeText()
         focus = nil
@@ -400,6 +403,7 @@ final class DirectInputTap {
     /// The IMK callback owns the key once the input client is bound.
     func receiveNative(_ event: CGEvent) -> Bool {
         guard usesNativeText else { return false }
+        do { try applyNativeRepair() } catch { stop(error); return false }
         return receive(nil, event.type, event, nativeClient: true) == nil
     }
 
@@ -484,14 +488,14 @@ final class DirectInputTap {
                         if letters {
                             try rememberRoute(event)
                             session.recordPassedLetters(text)
-                            if nativeClient { advanceNativeText(text) }
+                            if nativeClient { advanceNativeText(text.utf16.count) }
                         }
                         else if !session.raw.isEmpty, !text.isEmpty {
                             session.beginBoundary(text)
-                            if nativeClient { advanceNativeText(text) }
+                            if nativeClient { advanceNativeText(text.utf16.count) }
                         } else if !text.isEmpty {
                             session.recordSeparator(text)
-                            if nativeClient { advanceNativeText(text) }
+                            if nativeClient { advanceNativeText(text.utf16.count) }
                         }
                     } catch { stop(error) }
                 }
@@ -607,7 +611,31 @@ final class DirectInputTap {
     private func handle(_ event: CGEvent, _ proxy: CGEventTapProxy?) throws -> Bool {
         let code = event.getIntegerValueField(.keyboardEventKeycode)
         if code == 51, !session.raw.isEmpty {
-            try emit(session.backspace(), proxy)
+            let previous = session.displayed
+            let edit = try session.backspace()
+            if usesNativeText, !nativeClientRoute, let removed = previous.last {
+                // Notion's key handler removes the character before the caret even when IMK
+                // consumes Backspace (observed 2026-11-12), so only the remainder is ours.
+                advanceNativeText(-String(removed).utf16.count)
+                nativeRepair = DirectSession.difference(from: String(previous.dropLast()), to: session.displayed)
+                let epoch = generation
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.generation == epoch else { return }
+                    do { try self.applyNativeRepair() } catch { self.stop(error) }
+                }
+                previewChanged(session.raw, session.displayed)
+                requestDecision()
+                return false
+            }
+            if usesNativeText, edit.text.isEmpty, edit.deleteCount == 1 {
+                // KakaoTalk ignores an empty IMK commit, so its own Backspace removes
+                // the owned trailing character.
+                advanceNativeText(-edit.deleteUTF16Count)
+                previewChanged(session.raw, session.displayed)
+                requestDecision()
+                return false
+            }
+            try emit(edit, proxy)
             requestDecision()
             return true
         }
@@ -634,14 +662,14 @@ final class DirectInputTap {
         if !session.raw.isEmpty {
             try applyBasicDecision(proxy)
             session.beginBoundary(text)
-            if usesNativeText { advanceNativeText(text) }
+            if usesNativeText { advanceNativeText(text.utf16.count) }
             previewChanged("", "")
             requestDecision()
             return false
         }
         if !text.isEmpty {
             session.recordSeparator(text)
-            if usesNativeText { advanceNativeText(text) }
+            if usesNativeText { advanceNativeText(text.utf16.count) }
             requestDecision()
         }
         return false
@@ -656,6 +684,7 @@ final class DirectInputTap {
         // Each host has one output transport. Errors never retry through a second path.
         guard let routingEvent else { throw DirectFailure(detail: "The output batch has no owned keyboard route.") }
         if usesNativeText {
+            try applyNativeRepair()
             if !edit.isEmpty {
                 guard let replaceNativeText else { throw DirectFailure(detail: "The IMK text transport is unavailable.") }
                 try replaceNativeText(edit.deleteUTF16Count, edit.text)
@@ -668,6 +697,14 @@ final class DirectInputTap {
         let events = try KeyboardOutput.events(for: edit, routingEvent: routingEvent, commands: textRoute.commands)
         for event in events { post(event, proxy) }
         previewChanged(session.raw, session.displayed)
+    }
+
+    private func applyNativeRepair() throws {
+        guard let edit = nativeRepair else { return }
+        nativeRepair = nil
+        guard !edit.isEmpty else { return }
+        guard let replaceNativeText else { throw DirectFailure(detail: "The IMK text transport is unavailable.") }
+        try replaceNativeText(edit.deleteUTF16Count, edit.text)
     }
 
     private func requestDecision() {
