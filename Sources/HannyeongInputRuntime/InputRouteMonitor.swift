@@ -6,11 +6,39 @@ import Security
 /// Main-run-loop cache; every AX request and subscription runs on its serial worker.
 /// A key reads this cache only. Unknown/non-text routes never retain physical input.
 final class InputRouteMonitor: NSObject, @unchecked Sendable {
+    enum RefreshReason: String {
+        case routeChanged
+        case keyWhileChecking
+        case startup
+        case sourceResumed
+        case appActivated
+        case keyboardSourcesChanged
+        case inputClientChanged
+        case accessibilityChanged
+        case menuOpened
+        case menuClosed
+        case invalidated
+    }
+
+    private struct ProbeTiming {
+        var keyboardSourcesUs: UInt64 = 0
+        var focusUs: UInt64 = 0
+        var observersUs: UInt64 = 0
+
+        static func measure<T>(_ elapsed: inout UInt64, _ operation: () throws -> T) rethrows -> T {
+            let start = DispatchTime.now().uptimeNanoseconds
+            defer { elapsed = (DispatchTime.now().uptimeNanoseconds - start) / 1_000 }
+            return try operation()
+        }
+    }
+
     private let queue = DispatchQueue(label: "com.yeop.Hannyeong.InputRoute", qos: .userInitiated)
     private let changed: (DirectFocus?, Bool, Set<Int64>) -> Void
     private let checking: () -> Void
+    private let foregroundChanged: (NSRunningApplication?) -> Void
     private let logger: Logger
     private var generation = 0
+    private var refreshReason: RefreshReason = .startup
     private var probing = false
     private var stopped = true
     private var menuDepth = 0
@@ -22,35 +50,41 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
     private var keyboardSources: [pid_t: Bool] = [:]
     private var systemKeyboardPIDs: Set<Int64> = []
 
-    init(sourceID: String, checking: @escaping () -> Void, changed: @escaping (DirectFocus?, Bool, Set<Int64>) -> Void) {
+    init(sourceID: String, checking: @escaping () -> Void,
+         foregroundChanged: @escaping (NSRunningApplication?) -> Void = { _ in },
+         changed: @escaping (DirectFocus?, Bool, Set<Int64>) -> Void) {
         self.checking = checking
+        self.foregroundChanged = foregroundChanged
         self.changed = changed
         logger = Logger(subsystem: sourceID, category: "InputRoute")
     }
 
     func start() {
         stopped = false
-        activePID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let app = NSWorkspace.shared.frontmostApplication
+        activePID = app?.processIdentifier
+        foregroundChanged(app)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(activationChanged(_:)),
             name: NSWorkspace.didActivateApplicationNotification, object: nil)
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(producersChanged), name: name, object: nil)
         }
-        refresh()
+        refresh(.startup)
     }
 
     func invalidate() {
         textTarget = nil
         generation += 1
+        refreshReason = .invalidated
         changed(nil, false, systemKeyboardPIDs)
     }
 
-    @objc private func producersChanged() { refresh() }
+    @objc private func producersChanged() { refresh(.keyboardSourcesChanged) }
 
     func resume() {
         if menuDepth > 0 { logger.notice("Input source resumed; clearing menu state depth=\(self.menuDepth)") }
         menuDepth = 0
-        refresh()
+        refresh(.sourceResumed)
     }
 
     private func eligibleTarget(_ target: DirectFocus?) -> DirectFocus? {
@@ -59,19 +93,31 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
     }
 
     #if DIRECT_INPUT_QA
+    private var captureForQA: (() throws -> DirectFocus.Probe)?
+
+    func startForQA(capture: @escaping () throws -> DirectFocus.Probe) {
+        captureForQA = capture
+        stopped = false
+        refresh(.startup)
+    }
+
     func menuOpenedForQA() { menuDepth += 1 }
     func targetForQA(_ target: DirectFocus?) -> DirectFocus? { eligibleTarget(target) }
     #endif
 
     @objc private func activationChanged(_ notification: Notification) {
-        activePID = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
+        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        activePID = app?.processIdentifier
+        foregroundChanged(app)
         menuDepth = 0
-        refresh()
+        refresh(.appActivated)
     }
 
-    func refresh() {
+    func refresh(_ reason: RefreshReason = .routeChanged) {
         guard !stopped else { return }
+        if probing && reason == .keyWhileChecking { return }
         generation += 1
+        refreshReason = reason
         checking()
         guard !probing else { return }
         probe()
@@ -80,21 +126,54 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
     private func probe() {
         probing = true
         let epoch = generation
+        let reason = refreshReason
         let activePID = self.activePID
+        let enqueuedAt = DispatchTime.now().uptimeNanoseconds
         queue.async { [self] in
-            let result: Result<(DirectFocus.Probe, Set<Int64>), Error>
-            do {
-                let keyboardPIDs = try inspectKeyboardSources()
-                let focus = try DirectFocus.probe()
-                try watch(Set([activePID, focus.pid].compactMap { $0 }))
-                result = .success((focus, keyboardPIDs))
-            } catch { result = .failure(error) }
-            DispatchQueue.main.async { [self] in
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            var timing = ProbeTiming()
+            var focusPID: pid_t?
+            var stage = "keyboardSources"
+            let result = Result<(DirectFocus.Probe, Set<Int64>), Error> {
+                #if DIRECT_INPUT_QA
+                if let captureForQA {
+                    stage = "focus"
+                    let focus = try ProbeTiming.measure(&timing.focusUs, captureForQA)
+                    focusPID = focus.pid
+                    return (focus, [])
+                }
+                #endif
+                let keyboardPIDs = try ProbeTiming.measure(&timing.keyboardSourcesUs, inspectKeyboardSources)
+                stage = "focus"
+                let focus = try ProbeTiming.measure(&timing.focusUs, DirectFocus.probe)
+                focusPID = focus.pid
+                stage = "observers"
+                try ProbeTiming.measure(&timing.observersUs) {
+                    try watch(Set([activePID, focus.pid].compactMap { $0 }))
+                }
+                return (focus, keyboardPIDs)
+            }
+            let finishedAt = DispatchTime.now().uptimeNanoseconds
+            let failedStage: String
+            switch result {
+            case .success: failedStage = "none"
+            case .failure: failedStage = stage
+            }
+            DispatchQueue.main.async { [self, timing, focusPID] in
+                let deliveredAt = DispatchTime.now().uptimeNanoseconds
+                func logProbe(_ outcome: String) {
+                    logger.notice("Input route probe; id=\(epoch) latest=\(self.generation) reason=\(reason.rawValue, privacy: .public) outcome=\(outcome, privacy: .public) failedStage=\(failedStage, privacy: .public) activePID=\(activePID ?? 0) focusPID=\(focusPID ?? 0) queueUs=\((startedAt - enqueuedAt) / 1_000) keyboardSourcesUs=\(timing.keyboardSourcesUs) focusUs=\(timing.focusUs) observersUs=\(timing.observersUs) mainQueueUs=\((deliveredAt - finishedAt) / 1_000) totalUs=\((deliveredAt - enqueuedAt) / 1_000)")
+                }
                 probing = false
                 guard !stopped else { return }
-                guard generation == epoch else { probe(); return }
+                guard generation == epoch else {
+                    logProbe("superseded")
+                    probe()
+                    return
+                }
                 switch result {
                 case .success(let (focus, keyboardPIDs)):
+                    logProbe("applied")
                     systemKeyboardPIDs = keyboardPIDs
                     let target = eligibleTarget(focus.target)
                     let isText = target != nil
@@ -105,9 +184,10 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
                     textTarget = target
                     changed(target, true, keyboardPIDs)
                 case .failure(let error):
-                    if let failure = error as? DirectFocus.RouteError { logger.error("Input route inspection failed: \(failure.detail, privacy: .public)") }
-                    else if let failure = error as? DirectFailure { logger.error("Input route inspection failed: \(failure.detail, privacy: .public)") }
-                    else { logger.error("Input route inspection failed: \(String(describing: error), privacy: .private)") }
+                    logProbe("failed")
+                    if let failure = error as? DirectFocus.RouteError { logger.error("Input route inspection failed: \(failure.detail, privacy: .public) id=\(epoch)") }
+                    else if let failure = error as? DirectFailure { logger.error("Input route inspection failed: \(failure.detail, privacy: .public) id=\(epoch)") }
+                    else { logger.error("Input route inspection failed: \(String(describing: error), privacy: .private) id=\(epoch)") }
                     checking()
                 }
             }
@@ -188,11 +268,11 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
             generation += 1
             textTarget = nil
             changed(nil, true, systemKeyboardPIDs)
-            refresh()
-        } else {
-            if name == kAXMenuClosedNotification { menuDepth = max(0, menuDepth - 1) }
-            refresh()
-        }
+            refresh(.menuOpened)
+        } else if name == kAXMenuClosedNotification {
+            menuDepth = max(0, menuDepth - 1)
+            refresh(.menuClosed)
+        } else { refresh(.accessibilityChanged) }
     }
 
     func stop() {

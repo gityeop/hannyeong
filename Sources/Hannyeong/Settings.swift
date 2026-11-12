@@ -1,9 +1,12 @@
 import AppKit
+import HannyeongInputRuntime
 import SwiftUI
 
 @MainActor
 final class SettingsWindowActivity: ObservableObject {
     @Published var isVisible = false
+    @Published var hasAccessibility = CommittedTextSelection.isTrusted
+    @Published var hasKeyboardAccess = TypingEngine.hasKeyboardAccess
 }
 
 @MainActor
@@ -40,9 +43,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
         updateActivity()
+        updatePermissions()
         if corrections.isViewLoaded { corrections.reload() }
     }
 
+    func windowDidBecomeKey(_ notification: Notification) { updatePermissions() }
     func windowWillClose(_ notification: Notification) { activity.isVisible = false }
     func windowDidMiniaturize(_ notification: Notification) { updateActivity() }
     func windowDidDeminiaturize(_ notification: Notification) { updateActivity() }
@@ -50,5 +55,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func updateActivity() {
         activity.isVisible = window?.isVisible == true && window?.isMiniaturized == false && !NSApp.isHidden
+    }
+
+    private func updatePermissions() {
+        activity.hasAccessibility = CommittedTextSelection.isTrusted
+        activity.hasKeyboardAccess = TypingEngine.hasKeyboardAccess
+        NativeInputEngine.shared.refreshPermissions()
     }
 }

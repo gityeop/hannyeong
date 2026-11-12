@@ -4,7 +4,7 @@ import Carbon
 import HannyeongCore
 import os
 
-/// Main-run-loop key owner. Notion uses its IMK callback; other hosts emit inside the tap.
+/// Main-run-loop key owner. IMK-owned hosts emit through their input client.
 final class DirectInputTap {
     private let decide: (DirectSession.Snapshot) async throws -> DirectSession.Decision
     private let changed: (Bool) -> Void
@@ -12,7 +12,7 @@ final class DirectInputTap {
     private let captureFocus: () throws -> DirectFocus?
     private let validateFocus: (DirectFocus) throws -> Bool
     private let invalidateRoute: () -> Void
-    private let refreshRoute: () -> Void
+    private let refreshRoute: (InputRouteMonitor.RefreshReason) -> Void
     private let post: (CGEvent, CGEventTapProxy) -> Void
     private let wake: () throws -> Void
     private let keyboard: KeyboardInput
@@ -39,6 +39,7 @@ final class DirectInputTap {
     private var commandTap: CFMachPort?
     private var commandSource: CFRunLoopSource?
     private var textRoute: DirectFocus?
+    private var nativeClientRoute = false
     private var routeKnown = false
     private var routeChecking = false
     private var passthroughWord = false
@@ -68,6 +69,11 @@ final class DirectInputTap {
     private let preferencesQueue = DispatchQueue(label: "com.yeop.HannyeongDirectPrototype.Preferences", qos: .utility)
     private(set) var enabled = false
     var systemKeyboardPIDs: Set<Int64> = []
+    var clientOwnedPID: pid_t? {
+        didSet {
+            if oldValue != nil, clientOwnedPID != oldValue { setNativeClientRoute(false) }
+        }
+    }
 
     init(decide: @escaping (DirectSession.Snapshot) async throws -> DirectSession.Decision,
          changed: @escaping (Bool) -> Void, failure: @escaping (Error) -> Void,
@@ -87,7 +93,8 @@ final class DirectInputTap {
          replaceNativeText: ((Int, String) throws -> Void)? = nil,
          resetNativeText: @escaping () -> Void = {},
          advanceNativeText: @escaping (String) -> Void = { _ in },
-         invalidateRoute: @escaping () -> Void = {}, refreshRoute: @escaping () -> Void = {}) throws {
+         invalidateRoute: @escaping () -> Void = {},
+         refreshRoute: @escaping (InputRouteMonitor.RefreshReason) -> Void = { _ in }) throws {
         keyboard = try KeyboardInput()
         self.decide = decide
         self.changed = changed
@@ -124,7 +131,9 @@ final class DirectInputTap {
     }
 
     #if DIRECT_INPUT_QA
-    func enableForQA() {
+    func enableForQA(keyboardTap: CFMachPort? = nil, observerTap: CFMachPort? = nil) {
+        tap = keyboardTap
+        commandTap = observerTap
         enabled = true
         let element = AXUIElementCreateApplication(getpid() + 1234)
         updateRoute(DirectFocus(pid: getpid() + 1234, field: element, window: element, commands: .keyBindings), known: true)
@@ -133,7 +142,7 @@ final class DirectInputTap {
     #endif
 
     func start(restoring sourceToRestore: String? = nil) throws {
-        guard AXIsProcessTrusted(), CGPreflightPostEventAccess() else {
+        guard TypingEngine.hasKeyboardAccess else {
             throw DirectFailure(detail: "Accessibility permission is required for Hannyeong Direct.")
         }
         guard NSRunningApplication.runningApplications(withBundleIdentifier: "com.hebbian.catchtype").isEmpty,
@@ -253,13 +262,27 @@ final class DirectInputTap {
 
     func dismissCandidates() { closeFeedback(); requestDecision() }
 
+    func setNativeClientRoute(_ active: Bool) {
+        guard nativeClientRoute != active else { return }
+        reset()
+        nativeClientRoute = active
+        if active { session.setInitialLanguage(.korean) }
+    }
+
     func beginRouteCheck() {
         routeChecking = true
+        guard !nativeClientRoute else { return }
         cancelRightCommand()
         closeFeedback()
     }
 
     func updateRoute(_ target: DirectFocus?, known: Bool) {
+        if nativeClientRoute {
+            textRoute = target
+            routeKnown = known
+            routeChecking = false
+            return
+        }
         let unchanged: Bool
         if let current = textRoute, let target { unchanged = current.matches(target) }
         else { unchanged = false }
@@ -284,11 +307,12 @@ final class DirectInputTap {
     func observeCommand(_ type: CGEventType, _ event: CGEvent) {
         guard enabled else { return }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            stop(DirectFailure(detail: "The system disabled the command-boundary observer. Reselect the input source."))
+            handleTapDisabled(type, tap: commandTap, name: "command-boundary observer")
             return
         }
         let marker = event.getIntegerValueField(.eventSourceUserData)
         guard marker != KeyboardOutput.outputMarker, marker != KeyboardOutput.wakeMarker else { return }
+        if type == .keyDown, yieldsKeyToInputClient(event) { return }
         if type == .keyDown, !observedFirstCommand {
             observedFirstCommand = true
             latencyLogger.notice("Keyboard observer received first key after resume; sourcePID=\(event.getIntegerValueField(.eventSourceUnixProcessID))")
@@ -303,18 +327,16 @@ final class DirectInputTap {
                 invalidateRoute()
             } else if type == .keyUp {
                 functionKeysHeld.remove(code)
-                refreshRoute()
+                refreshRoute(.routeChanged)
             }
         } else if type == .keyDown, !event.flags.intersection([.maskCommand, .maskControl, .maskAlternate]).isEmpty {
             reset()
             // A shortcut may edit the same field (e.g. Select All). Keep its identity
             // while checking; passed keys are owned only if that exact field is confirmed.
             beginRouteCheck()
-            refreshRoute()
+            refreshRoute(.routeChanged)
         } else if type == .keyDown, routeChecking || !routeKnown {
-            // A new physical key is a new focus observation after an AX error.
-            // The route worker checks it asynchronously; the key itself never waits.
-            refreshRoute()
+            refreshRoute(.keyWhileChecking)
         }
     }
 
@@ -322,6 +344,25 @@ final class DirectInputTap {
         do { try pause() }
         catch { failure(error) }
         failure(error)
+    }
+
+    private func handleTapDisabled(_ type: CGEventType, tap: CFMachPort?, name: String) {
+        guard enabled else { return }
+        guard type == .tapDisabledByTimeout else {
+            stop(DirectFailure(detail: "The system disabled the \(name)."))
+            return
+        }
+        latencyLogger.error("Event tap timed out; tap=\(name, privacy: .public)")
+        do {
+            guard let tap else { throw DirectFailure(detail: "The \(name) is unavailable after a timeout.") }
+            try Self.resumeEventTap(tap, failure: "The \(name) could not be re-enabled after a timeout.")
+            consumed.removeAll()
+            functionKeysHeld.removeAll()
+            if nativeClientRoute { reset() }
+            invalidateRoute()
+            refreshRoute(.routeChanged)
+            latencyLogger.notice("Event tap resumed; tap=\(name, privacy: .public)")
+        } catch { stop(error) }
     }
 
     private func routeFailed(_ error: DirectFocus.RouteError) {
@@ -347,9 +388,16 @@ final class DirectInputTap {
         latencyLogger.notice("Typing route state=\(state, privacy: .public) known=\(self.routeKnown) checking=\(self.routeChecking) sourcePID=\(event.getIntegerValueField(.eventSourceUnixProcessID)) targetPID=\(event.getIntegerValueField(.eventTargetUnixProcessID)) routePID=\(self.textRoute?.pid ?? 0) sheet=\(self.textRoute?.sheet != nil)")
     }
 
-    private var usesNativeText: Bool { !managesInputSource && textRoute?.hostBundleID == "notion.id" }
+    private var usesNativeText: Bool { nativeClientRoute || (!managesInputSource && textRoute?.hostBundleID == "notion.id") }
 
-    /// The actual IMK callback owns Notion keys, after its input client is active.
+    private func yieldsKeyToInputClient(_ event: CGEvent) -> Bool {
+        if nativeClientRoute { return true }
+        guard let clientOwnedPID else { return false }
+        let target = event.getIntegerValueField(.eventTargetUnixProcessID)
+        return target <= 0 || target == Int64(clientOwnedPID)
+    }
+
+    /// The IMK callback owns the key once the input client is bound.
     func receiveNative(_ event: CGEvent) -> Bool {
         guard usesNativeText else { return false }
         return receive(nil, event.type, event, nativeClient: true) == nil
@@ -365,7 +413,7 @@ final class DirectInputTap {
             }
         }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            stop(DirectFailure(detail: "The system disabled the direct-input keyboard tap. Reselect the input source."))
+            handleTapDisabled(type, tap: tap, name: "direct-input keyboard tap")
             return Unmanaged.passUnretained(event)
         }
         let marker = event.getIntegerValueField(.eventSourceUserData)
@@ -380,6 +428,9 @@ final class DirectInputTap {
                 }
             } else { applyWake(proxy) }
             return nil
+        }
+        if !nativeClient, type == .keyDown, yieldsKeyToInputClient(event) {
+            return Unmanaged.passUnretained(event)
         }
         traceRouting(type, event)
         if KeyboardInput.isSoftwareText(event, systemKeyboardPIDs: systemKeyboardPIDs) {
@@ -401,7 +452,7 @@ final class DirectInputTap {
             return Unmanaged.passUnretained(event)
         }
         if type == .leftMouseUp || type == .rightMouseUp || type == .otherMouseUp {
-            if feedbackProjections.isEmpty || !feedbackContains(event) { refreshRoute() }
+            if feedbackProjections.isEmpty || !feedbackContains(event) { refreshRoute(.routeChanged) }
             return Unmanaged.passUnretained(event)
         }
         if event.getIntegerValueField(.eventTargetUnixProcessID) == Int64(getpid()),
@@ -417,12 +468,12 @@ final class DirectInputTap {
             return Unmanaged.passUnretained(event)
         }
         let targetPID = event.getIntegerValueField(.eventTargetUnixProcessID)
-        if type == .keyDown, let route = textRoute, !route.acceptsKeyboardTarget(targetPID) {
+        if !nativeClientRoute, type == .keyDown, let route = textRoute, !route.acceptsKeyboardTarget(targetPID) {
             // A command panel may own the keyboard while AX still reports a text field behind it.
             updateRoute(nil, known: false)
-            refreshRoute()
+            refreshRoute(.routeChanged)
         }
-        if routeChecking, textRoute != nil, !passthroughWord {
+        if !nativeClientRoute, routeChecking, textRoute != nil, !passthroughWord {
             if type == .keyDown {
                 if !modifiers.isEmpty || [36, 76, 48, 51, 53, 117, 115, 119, 116, 121, 123, 124, 125, 126].contains(code) {
                     reset()
@@ -454,7 +505,7 @@ final class DirectInputTap {
             passthroughWord = false
             passthroughPID = nil
         }
-        if textRoute == nil || !functionKeysHeld.isEmpty || passthroughWord {
+        if (!nativeClientRoute && (textRoute == nil || passthroughWord)) || !functionKeysHeld.isEmpty {
             cancelRightCommand()
             if type == .keyDown, modifiers.isEmpty {
                 do {
@@ -466,7 +517,7 @@ final class DirectInputTap {
             }
             if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
                 reset()
-                refreshRoute()
+                refreshRoute(.routeChanged)
             }
             return Unmanaged.passUnretained(event)
         }
@@ -531,7 +582,7 @@ final class DirectInputTap {
         guard type == .keyDown else { return Unmanaged.passUnretained(event) }
         do {
             if try handle(event, proxy) {
-                consumed.insert(code)
+                if !nativeClient { consumed.insert(code) }
                 return nil
             }
             return Unmanaged.passUnretained(event)
@@ -543,7 +594,8 @@ final class DirectInputTap {
     }
 
     private func applyWake(_ proxy: CGEventTapProxy?) {
-        guard enabled, textRoute != nil, !routeChecking, functionKeysHeld.isEmpty else { return }
+        guard enabled, nativeClientRoute || (textRoute != nil && !routeChecking), functionKeysHeld.isEmpty else { return }
+        if nativeClientRoute && IsSecureEventInputEnabled() { reset(); return }
         do {
             if singleReady { singleReady = false; try applySingleTap(proxy) }
             try applyFeedbackReady(proxy)
@@ -603,15 +655,15 @@ final class DirectInputTap {
     private func emit(_ edit: DirectSession.Edit, _ proxy: CGEventTapProxy?) throws {
         // Each host has one output transport. Errors never retry through a second path.
         guard let routingEvent else { throw DirectFailure(detail: "The output batch has no owned keyboard route.") }
-        guard let textRoute else { throw DirectFailure(detail: "The output batch has no owned text field.") }
         if usesNativeText {
             if !edit.isEmpty {
-                guard let replaceNativeText else { throw DirectFailure(detail: "The Notion text transport is unavailable.") }
+                guard let replaceNativeText else { throw DirectFailure(detail: "The IMK text transport is unavailable.") }
                 try replaceNativeText(edit.deleteUTF16Count, edit.text)
             }
             previewChanged(session.raw, session.displayed)
             return
         }
+        guard let textRoute else { throw DirectFailure(detail: "The output batch has no owned text field.") }
         guard let proxy else { throw DirectFailure(detail: "Keyboard output requires an event-tap proxy.") }
         let events = try KeyboardOutput.events(for: edit, routingEvent: routingEvent, commands: textRoute.commands)
         for event in events { post(event, proxy) }
@@ -619,43 +671,56 @@ final class DirectInputTap {
     }
 
     private func requestDecision() {
-        guard enabled, textRoute != nil, !routeChecking, functionKeysHeld.isEmpty, !passthroughWord,
+        guard enabled, nativeClientRoute || (textRoute != nil && !routeChecking && !passthroughWord), functionKeysHeld.isEmpty,
               !rightCommand.isPressed, !rightCommand.hasPending, feedbackTarget == nil,
               session.hasDecision, modelTask == nil, ready == nil, session.snapshot != lastDecided else { return }
-        let request = session.snapshot, epoch = generation
+        let request = session.snapshot, epoch = generation, clientOwned = nativeClientRoute
         let decide = self.decide, captureFocus = self.captureFocus, validateFocus = self.validateFocus
         modelTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             let began = DispatchTime.now().uptimeNanoseconds
             do {
                 // AX messaging and candidate/model work must never run inside the key tap.
-                guard let target = try captureFocus() else {
+                let target = clientOwned ? nil : try captureFocus()
+                if target == nil && !clientOwned {
                     await MainActor.run {
                         self.modelTask = nil
                         guard self.enabled else { return }
-                        if self.generation == epoch { self.beginRouteCheck(); self.refreshRoute() }
+                        if self.generation == epoch { self.beginRouteCheck(); self.refreshRoute(.routeChanged) }
                         else { self.requestDecision() }
                     }
                     return
                 }
+                let capturedAt = DispatchTime.now().uptimeNanoseconds
                 let text = try await decide(request)
-                guard try validateFocus(target) else {
+                let decidedAt = DispatchTime.now().uptimeNanoseconds
+                if let target, try !validateFocus(target) {
                     await MainActor.run {
                         self.modelTask = nil
                         guard self.enabled else { return }
-                        if self.generation == epoch { self.beginRouteCheck(); self.refreshRoute() }
+                        if self.generation == epoch { self.beginRouteCheck(); self.refreshRoute(.routeChanged) }
                         else { self.requestDecision() }
                     }
                     return
                 }
-                let elapsed = (DispatchTime.now().uptimeNanoseconds - began) / 1_000_000
-                if elapsed >= 100 { self.latencyLogger.notice("Background decision/focus slow; ms=\(elapsed)") }
+                let validatedAt = DispatchTime.now().uptimeNanoseconds
+                let elapsed = (validatedAt - began) / 1_000_000
+                if elapsed >= 100 {
+                    self.latencyLogger.notice("Background decision/focus slow; ms=\(elapsed) focusPID=\(target?.pid ?? 0) captureMs=\((capturedAt - began) / 1_000_000) decisionMs=\((decidedAt - capturedAt) / 1_000_000) validationMs=\((validatedAt - decidedAt) / 1_000_000)")
+                }
                 await MainActor.run {
                     self.modelTask = nil
                     guard self.enabled else { return }
                     guard self.generation == epoch, self.session.snapshot == request else { self.requestDecision(); return }
-                    self.ready = (request, text, target)
-                    if !self.routeChecking { do { try self.wake() } catch { self.stop(error) } }
+                    do {
+                        if let target {
+                            self.ready = (request, text, target)
+                            if !self.routeChecking { try self.wake() }
+                        } else {
+                            guard !IsSecureEventInputEnabled() else { self.reset(); return }
+                            try self.applyDecision(text, for: request, proxy: nil)
+                        }
+                    } catch { self.stop(error) }
                 }
             } catch {
                 await MainActor.run {
@@ -727,14 +792,14 @@ final class DirectInputTap {
             guard let self else { return }
             do {
                 guard let focus = try captureFocus() else {
-                    await MainActor.run { if self.generation == epoch { self.beginRouteCheck(); self.refreshRoute() } }
+                    await MainActor.run { if self.generation == epoch { self.beginRouteCheck(); self.refreshRoute(.routeChanged) } }
                     return
                 }
                 let candidates = try CandidateBuilder.candidates(for: target.raw, includeSplits: true)
                 let projections = try candidates.map { try DirectSession.Projection(text: $0.text, raw: target.raw) }
                 let bounds = try caretBounds(focus)
                 guard try validateFocus(focus) else {
-                    await MainActor.run { if self.generation == epoch { self.beginRouteCheck(); self.refreshRoute() } }
+                    await MainActor.run { if self.generation == epoch { self.beginRouteCheck(); self.refreshRoute(.routeChanged) } }
                     return
                 }
                 await MainActor.run {
@@ -763,7 +828,7 @@ final class DirectInputTap {
             guard let self else { return }
             do {
                 guard try validateFocus(focus) else {
-                    await MainActor.run { if self.generation == epoch { self.beginRouteCheck(); self.refreshRoute() } }
+                    await MainActor.run { if self.generation == epoch { self.beginRouteCheck(); self.refreshRoute(.routeChanged) } }
                     return
                 }
                 await MainActor.run {
@@ -811,14 +876,18 @@ final class DirectInputTap {
         guard let (request, text, target) = ready else { return }
         ready = nil
         guard session.snapshot == request else { requestDecision(); return }
-        guard let route = textRoute, route.matches(target) else { beginRouteCheck(); refreshRoute(); return }
+        guard let route = textRoute, route.matches(target) else { beginRouteCheck(); refreshRoute(.routeChanged); return }
         if let focus, !focus.matches(target) {
             beginRouteCheck()
-            refreshRoute()
+            refreshRoute(.routeChanged)
             return
         }
         guard target.pid != getpid() else { reset(); return }
         focus = target
+        try applyDecision(text, for: request, proxy: proxy)
+    }
+
+    private func applyDecision(_ text: DirectSession.Decision, for request: DirectSession.Snapshot, proxy: CGEventTapProxy?) throws {
         if case .live(let current) = text {
             if !liveDetection {
                 basicDecision = (request, current)

@@ -35,7 +35,7 @@ private final class Fixture {
                                          }
                                          return end
                                      }, forwardHostEvent: { [view] event in view.applyHostEvent(event) }) { [weak self] message in
-            self?.errors.append(message)
+            self?.errors.append(message.localizedDescription)
         }
     }
 

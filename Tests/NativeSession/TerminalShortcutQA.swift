@@ -13,7 +13,7 @@ private struct TerminalShortcutQA {
                 let runtime = try JSONDecoder().decode(LocalRuntimeConfiguration.self,
                     from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])))
                 try await run(runtime)
-                print("PASS Terminal commit coordinates: pending and Space, reversal/restore, Korean notice and caret protection")
+                print("PASS Terminal commit coordinates: pending and Space, reversal/restore, caret protection and error reporting")
                 exit(0)
             } catch {
                 fputs("Terminal shortcut QA failed: \(error)\n", stderr)
@@ -60,8 +60,8 @@ private struct TerminalShortcutQA {
             view.setSelectedRange(NSRange(location: 0, length: 0))
             let before = view.string
             session.toggleLanguage()
-            try require(view.string == before && sessionErrors as! [String] == ["방금 입력한 단어를 바꾸지 못했습니다. 입력 위치를 확인해 주세요."],
-                        "Moved caret was edited or its Korean notice was not shown")
+            try require(view.string == before && sessionErrors.count == 1,
+                        "Moved caret was edited or the error was not reported")
             try require(sessionErrors.count == 1, "Personal update failed: \(sessionErrors)")
         }
     }

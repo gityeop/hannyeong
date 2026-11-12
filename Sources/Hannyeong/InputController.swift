@@ -2,6 +2,7 @@ import AppKit
 import Carbon
 import InputMethodKit
 import HannyeongCore
+import HannyeongInputRuntime
 import os
 
 @MainActor
@@ -9,7 +10,7 @@ import os
 final class InputController: IMKInputController {
     private var session: CompositionSession?
     private var directMode = false
-    private var notionOutput: NativeNotionOutput?
+    private var nativeOutput: NativeNotionOutput?
     private var isActiveController = false
     private var feedbackWindow: FeedbackPanel?
     private var alternatePreview: AlternatePreviewPanel?
@@ -36,7 +37,7 @@ final class InputController: IMKInputController {
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
         guard let client = inputClient as? any IMKTextInput else {
-            reportError("입력 클라이언트가 IMKTextInput을 제공하지 않습니다. 입력란을 다시 선택해 주세요.")
+            reportError("The input client does not implement IMKTextInput.")
             return nil
         }
         // The client already exists at initialization; its first key may precede activation.
@@ -57,7 +58,7 @@ final class InputController: IMKInputController {
         closeFeedback()
         super.activateServer(sender)
         guard let client = sender as? any IMKTextInput else {
-            reportError("입력 클라이언트가 IMKTextInput을 제공하지 않습니다. 입력란을 다시 선택해 주세요.")
+            reportError("The input client does not implement IMKTextInput.")
             return
         }
         isActiveController = true
@@ -81,24 +82,32 @@ final class InputController: IMKInputController {
             session = nil
             directMode = direct
         }
-        if direct, client.bundleIdentifier() == "notion.id", notionOutput == nil {
-            notionOutput = NativeNotionOutput(client: client)
+        let bundleID = client.bundleIdentifier()
+        let usesClientRoute = bundleID == TypingEngine.clientOwnedBundleID ||
+            (bundleID == nil && NSWorkspace.shared.frontmostApplication?.bundleIdentifier == TypingEngine.clientOwnedBundleID)
+        if let output = nativeOutput, !direct || (output.usesClientRoute && !output.belongsTo(client)) {
+            NativeInputEngine.shared.deactivateNativeOutput(output)
+            nativeOutput = nil
         }
-        if !direct, let output = notionOutput {
-            NativeInputEngine.shared.deactivateNotion(output)
-            notionOutput = nil
+        if direct, nativeOutput == nil, usesClientRoute || bundleID == "notion.id" {
+            nativeOutput = NativeNotionOutput(client: client, usesClientRoute: usesClientRoute)
         }
         NativeInputEngine.shared.activate(client: client)
         if direct {
             let layouts = TISCreateInputSourceList([kTISPropertyInputSourceID: "com.apple.keylayout.ABC"] as CFDictionary, true).takeRetainedValue() as! [TISInputSource]
-            guard let abc = layouts.first, TISSetInputMethodKeyboardLayoutOverride(abc) == noErr else {
-                reportError("입력기를 준비하지 못했습니다. 입력 소스를 다시 선택해 주세요.")
+            guard let abc = layouts.first else {
+                reportError("The ABC keyboard layout is unavailable.")
+                return
+            }
+            let status = TISSetInputMethodKeyboardLayoutOverride(abc)
+            guard status == noErr else {
+                reportError("Keyboard layout override failed: status=\(status)")
                 return
             }
         } else {
             prepareSession(for: client)
         }
-        shortcutLogger.notice("Input owner selected; experimental=\(direct) legacySession=\(self.session != nil)")
+        shortcutLogger.notice("Input owner selected; experimental=\(direct) clientOwned=\(usesClientRoute && direct) legacySession=\(self.session != nil)")
     }
 
     private func prepareSession(for client: any IMKTextInput) {
@@ -110,24 +119,27 @@ final class InputController: IMKInputController {
             session = CompositionSession(client: client, hostBundleID: previewHostBundleID,
                                          liveDetectionOverride: false,
                                          onPreviewStart: { [weak self] in self?.prepareAlternatePreview() },
-                                         onPreview: { [weak self] text in self?.showAlternatePreview(text) }) { [weak self] message in
-                self?.showNotice(message)
-            }
+                                         onPreview: { [weak self] text in self?.showAlternatePreview(text) })
         }
     }
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         if directMode {
-            if let event, event.type == .keyDown, let output = notionOutput {
-                return NativeInputEngine.shared.handleNotion(event, output: output)
+            if let event, event.type == .keyDown, let output = nativeOutput {
+                if output.usesClientRoute {
+                    guard isActiveController, let sender = sender as? any IMKTextInput, output.belongsTo(sender) else {
+                        return false
+                    }
+                }
+                return NativeInputEngine.shared.handleNative(event, output: output)
             }
             // An existing IMK client can keep its old modifier mask after the mode changes.
             return event?.type == .flagsChanged && event?.keyCode == 54 &&
                 (sender as? any IMKTextInput)?.bundleIdentifier() == "com.apple.Terminal"
         }
         guard let event else {
-            reportError("InputMethodKit에서 키 이벤트를 받지 못했습니다.")
-            return true
+            reportError("InputMethodKit delivered no key event.")
+            return false
         }
         defer { if event.type == .keyDown { session?.finishInputEvent() } }
         if ReplayedInputEvent.consume(event, hostBundleID: (sender as? any IMKTextInput)?.bundleIdentifier()) { return false }
@@ -138,21 +150,13 @@ final class InputController: IMKInputController {
             return false
         }
         guard event.type == .keyDown || event.type == .flagsChanged else { return false }
-        if event.type == .keyDown {
-            if event.keyCode == 53, AppSupport.shared.dismissError() {
-                rightCommand.cancel()
-                return true
-            }
-            AppSupport.shared.clearError()
-        }
         guard sender is any IMKTextInput else {
-            reportError("활성 입력 클라이언트가 없습니다. 입력란을 다시 선택해 주세요.")
-            return true
+            reportError("The key event has no IMKTextInput client.")
+            return false
         }
         guard let session else {
-            shortcutLogger.error("Input key arrived without a session; id=\(String(describing: ObjectIdentifier(self)), privacy: .public)")
-            reportError("한녕 입력 세션이 활성화되지 않았습니다. 입력 소스를 다시 선택해 주세요.")
-            return true
+            reportError("Input key arrived without a session; controller=\(ObjectIdentifier(self))")
+            return false
         }
         rightCommand.handle(event)
         if event.type == .flagsChanged {
@@ -172,7 +176,7 @@ final class InputController: IMKInputController {
                 if let number = Int(event.charactersIgnoringModifiers ?? ""), (1...9).contains(number) {
                     feedbackLogger.notice("Correction number received: \(number)")
                     if feedbackWindow?.selectNumber(number) != true {
-                        showNotice("해당 번호의 후보가 없습니다. 표시된 번호를 선택해 주세요.")
+                        feedbackLogger.notice("No correction candidate for number \(number)")
                     }
                     return true
                 }
@@ -195,19 +199,25 @@ final class InputController: IMKInputController {
     }
 
     override func commitComposition(_ sender: Any!) {
-        guard !directMode else { return }
+        if directMode {
+            if let output = nativeOutput, output.usesClientRoute,
+               let sender = sender as? any IMKTextInput, output.belongsTo(sender) {
+                NativeInputEngine.shared.commitNativeComposition(output)
+            }
+            return
+        }
         shortcutLogger.info("Host requested composition commitment")
         session?.logDiagnostic("host_commit_requested")
         closeFeedback()
         session?.commitPending()
     }
 
-    // All conversion is owned by handle(_:) in basic mode or the tap in experimental mode.
+    // Keys enter through handle(_:) or the shared event tap.
     override func inputText(_ string: String!, client sender: Any!) -> Bool { false }
 
     override func deactivateServer(_ sender: Any!) {
         isActiveController = false
-        if let output = notionOutput { NativeInputEngine.shared.deactivateNotion(output) }
+        if let output = nativeOutput { NativeInputEngine.shared.deactivateNativeOutput(output) }
         if directMode { NativeInputEngine.shared.recheckInputTarget() }
         rightCommand.cancel()
         closeFeedback()
@@ -218,7 +228,7 @@ final class InputController: IMKInputController {
 
     override func inputControllerWillClose() {
         isActiveController = false
-        if let output = notionOutput { NativeInputEngine.shared.deactivateNotion(output) }
+        if let output = nativeOutput { NativeInputEngine.shared.deactivateNativeOutput(output) }
         NotificationCenter.default.removeObserver(self)
         if directMode { NativeInputEngine.shared.recheckInputTarget() }
         shortcutLogger.notice("Input controller closing; id=\(String(describing: ObjectIdentifier(self)), privacy: .public)")
@@ -247,9 +257,8 @@ final class InputController: IMKInputController {
             do {
                 try await session.applyFeedback(preferred: preferred, scope: scope)
                 feedbackLogger.notice("Correction candidate applied: \(index + 1)")
-                AppSupport.shared.clearError()
             } catch {
-                reportFeedbackError(error, message: "교정 내용을 모두 반영하지 못했습니다. 다시 시도해 주세요.")
+                reportFeedbackError(error)
             }
         }
     }
@@ -293,14 +302,13 @@ final class InputController: IMKInputController {
             let displayCandidates = try candidates.map { try session.feedbackDisplayText(for: $0) }
             guard let client = client() as? any IMKTextInput else {
                 session.cancelFeedback()
-                showNotice("입력란의 위치를 확인하지 못했습니다. 입력란을 다시 선택해 주세요.")
+                feedbackLogger.error("The correction panel has no IMKTextInput client")
                 return
             }
             var caretRect = NSRect.zero
             _ = client.attributes(forCharacterIndex: 0, lineHeightRectangle: &caretRect)
             feedbackCandidates = candidates
             feedbackScope = scope
-            AppSupport.shared.clearError()
             if feedbackWindow == nil { feedbackWindow = FeedbackPanel() }
             feedbackWindow?.show(candidates: displayCandidates, scope: scope, at: caretRect) { [weak self] index in
                 self?.applyFeedback(index: index)
@@ -308,7 +316,7 @@ final class InputController: IMKInputController {
             feedbackLogger.notice("Correction panel shown: \(candidates.count) candidates")
         } catch {
             closeFeedback()
-            reportFeedbackError(error, message: "지금 고칠 수 있는 변환이 없습니다. 자동 변환 직후에 시도하세요.")
+            reportFeedbackError(error)
         }
     }
 
@@ -318,11 +326,10 @@ final class InputController: IMKInputController {
         session?.cancelFeedback()
     }
 
-    private func reportFeedbackError(_ error: Error, message: String) {
+    private func reportFeedbackError(_ error: Error) {
         session?.logFailure(error, stage: "feedback_failed")
         let failure = error as NSError
         feedbackLogger.error("Correction failed: \(failure.domain, privacy: .public) code \(failure.code)")
-        showNotice(message)
     }
 
     private func logCommandAction(_ action: String) {
@@ -331,8 +338,7 @@ final class InputController: IMKInputController {
     }
 
     private func reportError(_ message: String) {
-        NSLog("Hannyeong InputController: %@", message)
-        showNotice(message)
+        shortcutLogger.error("\(message, privacy: .public)")
     }
 
     private func prepareAlternatePreview() {
@@ -366,16 +372,5 @@ final class InputController: IMKInputController {
         var rect = NSRect.zero
         _ = client.attributes(forCharacterIndex: index, lineHeightRectangle: &rect)
         return rect
-    }
-
-    private func showNotice(_ message: String) {
-        alternatePreview?.hide()
-        var caretRect: NSRect?
-        if let client = client() {
-            var rect = NSRect.zero
-            _ = client.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)
-            caretRect = rect
-        }
-        AppSupport.shared.showError(message, at: caretRect)
     }
 }

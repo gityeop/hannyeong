@@ -9,7 +9,7 @@ enum CommittedTextSelection {
         case accessibility(String, AXError)
         var errorDescription: String? {
             switch self {
-            case .permissionRequired: return "앞 단어를 고치려면 한녕 설정에서 손쉬운 사용 권한을 허용해 주세요."
+            case .permissionRequired: return "Accessibility permission is required for committed text selection."
             case .invalidTarget(let detail): return "Committed edit target: " + detail
             case .accessibility(let operation, let code): return "Accessibility \(operation) failed: \(code.rawValue)"
             }
@@ -23,10 +23,14 @@ enum CommittedTextSelection {
         }
         return host
     }
-    @MainActor static func requestAccess() {
+    @MainActor static func requestAccess(requiresKeyboardPosting: Bool = false) {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        if !AXIsProcessTrustedWithOptions(options) {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+        let trusted = AXIsProcessTrustedWithOptions(options)
+        if !trusted || (requiresKeyboardPosting && !CGPreflightPostEventAccess()) {
+            let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+            if !NSWorkspace.shared.open(url) {
+                AppSupport.shared.reportConfigurationError(Failure.invalidTarget("Accessibility settings could not be opened"))
+            }
         }
     }
     @MainActor static func select(_ expected: String, hostBundleID: String?) async throws -> NSRange {

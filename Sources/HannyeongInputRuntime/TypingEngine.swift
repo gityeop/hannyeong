@@ -1,11 +1,14 @@
 import AppKit
+import ApplicationServices
 import HannyeongCore
 
 /// Shared word/model state with one physical-key owner per host.
 @MainActor
 public final class TypingEngine {
     public static let directSourceID = "com.yeop.inputmethod.HannyeongDirectSource"
+    public static let clientOwnedBundleID = "com.kakao.KakaoTalkMac"
     public static var currentSourceID: String { DirectInputSource.current() }
+    public nonisolated static var hasKeyboardAccess: Bool { AXIsProcessTrusted() && CGPreflightPostEventAccess() }
 
     private let runtime: DirectRuntime
     private var input: DirectInputTap!
@@ -64,8 +67,12 @@ public final class TypingEngine {
             }, sourceID: sourceID, managesInputSource: !native, replaceNativeSheet: replaceNativeSheet,
             replaceNativeText: replaceNativeText, resetNativeText: resetNativeText, advanceNativeText: advanceNativeText,
             invalidateRoute: { [weak self] in self?.routeMonitor?.invalidate() },
-            refreshRoute: { [weak self] in self?.routeMonitor?.refresh() })
-        routeMonitor = InputRouteMonitor(sourceID: sourceID, checking: { [weak self] in self?.input.beginRouteCheck() }) { [weak self] target, known, keyboardPIDs in
+            refreshRoute: { [weak self] reason in self?.routeMonitor?.refresh(reason) })
+        routeMonitor = InputRouteMonitor(sourceID: sourceID, checking: { [weak self] in self?.input.beginRouteCheck() },
+                                         foregroundChanged: { [weak self] app in
+            guard native else { return }
+            self?.input.clientOwnedPID = app?.bundleIdentifier == Self.clientOwnedBundleID ? app?.processIdentifier : nil
+        }) { [weak self] target, known, keyboardPIDs in
             self?.input.systemKeyboardPIDs = keyboardPIDs
             self?.input.updateRoute(target, known: known)
         }
@@ -80,9 +87,10 @@ public final class TypingEngine {
     public func pause() throws { try input.pause() }
     public func close() throws { routeMonitor.stop(); try input.close() }
     public func reset() { input.reset() }
+    public func setNativeClientRoute(_ active: Bool) { input.setNativeClientRoute(active) }
     public func handleNative(_ event: CGEvent) -> Bool { input.receiveNative(event) }
     public func resumeAfterSecureInput() { routeMonitor.resume() }
-    public func recheckInputTarget() { routeMonitor.refresh() }
+    public func recheckInputTarget() { routeMonitor.refresh(.inputClientChanged) }
     public func dismissCandidates() { input.dismissCandidates() }
     public func configure(live: Bool, fixedEnglish: Bool?, backfill: Bool) {
         input.configure(live: live, fixedEnglish: fixedEnglish, backfill: backfill)

@@ -10,7 +10,7 @@ private let ruleLexicon = try! WordFrequencies.load(URL(fileURLWithPath: ".build
 private final class Fixture {
     let view = NativeTextView(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
     let client = NativeInputClient()
-    var errors: [String] = []
+    var errors: [Error] = []
     var session: CompositionSession!
     var selectionAttempts = 0
     var selectionError: Error?
@@ -45,8 +45,8 @@ private final class Fixture {
                                          }
                                          return end - axParagraphOffset
                                      }, forwardHostEvent: { [view] event in view.applyHostEvent(event) },
-                                     onPreview: onPreview) { [weak self] message in
-            self?.errors.append(message)
+                                     onPreview: onPreview) { [weak self] error in
+            self?.errors.append(error)
         }
     }
 
@@ -66,7 +66,7 @@ private final class Fixture {
 
     func settle() async throws {
         for _ in 0..<300 {
-            guard errors.isEmpty else { throw LocalDecisionError(detail: errors.joined(separator: "; ")) }
+            if let error = errors.first { throw error }
             if !view.hasMarkedText() && !session.hasPendingRewrite { return }
             try await Task.sleep(for: .milliseconds(100))
         }
@@ -91,7 +91,9 @@ private struct BackfillQA {
         Task { @MainActor in
             do {
                 for line in try await run() { print(line) }
-                let scope = CommandLine.arguments.contains("--registered-entities-only") ? "registered entities" : "committed-word backfill"
+                let scope = if CommandLine.arguments.contains("--recovery-only") { "recovery after failed edit" }
+                            else if CommandLine.arguments.contains("--registered-entities-only") { "registered entities" }
+                            else { "committed-word backfill" }
                 print("PASS \(scope) native session")
                 exit(0)
             } catch {
@@ -126,6 +128,31 @@ private struct BackfillQA {
             log.append(name)
         }
         try require(PriorWordCorrectionSettings.enabled(in: defaults), "priorCorrectionDefaultsToEnabled")
+        if CommandLine.arguments.contains("--recovery-only") {
+            let failed = Fixture(prefix: "", store: store, local: local, defaults: defaults)
+            failed.selectionError = CommittedTextSelection.Failure.accessibility("committed text", .parameterizedAttributeUnsupported)
+            failed.type("to go home ")
+            failed.type("hello ")
+            failed.key("\r", code: 36, flags: .shift)
+            failed.type("dkssud ")
+            try await failed.expectError()
+            try require(failed.errors.count == 1 && failed.errors.first?.localizedDescription == failed.selectionError?.localizedDescription,
+                        "rewriteFailureReportsTheOriginalErrorOnce")
+            failed.errors.removeAll()
+            try await failed.settle()
+            try expect(failed, "새 해 home hello \n안녕 ", "failedRewriteDrainsQueuedTextInOrder")
+            try require(failed.view.returnEvents == 1 && failed.view.lastReturnModifiers == NSEvent.ModifierFlags.shift.rawValue,
+                        "failedRewriteForwardsShiftReturnOnce")
+            try require(failed.selectionAttempts == 1, "failedRewriteIsNotRetried")
+
+            let cancelled = Fixture(prefix: "", store: store, local: local, defaults: defaults)
+            cancelled.selectionError = CancellationError()
+            cancelled.type("to go home ")
+            cancelled.type("hello ")
+            try await cancelled.settle()
+            try expect(cancelled, "새 해 home ", "cancelledRewriteDoesNotForwardQueuedKeys")
+            return log
+        }
         let registeredEntityCases = [
             ("gptdms ", "gpt은 "), ("gptgkrh ", "gpt하고 "), ("gptrk ", "gpt가 "),
             ("tlcdhk ", "tlc와 "), ("chatgptrhk ", "chatgpt과 "), ("gptrlsmd ", "gpt기능 "),
@@ -268,8 +295,8 @@ private struct BackfillQA {
         try await failed.expectError()
         for _ in 0..<100 where failed.session.hasPendingRewrite { try await Task.sleep(for: .milliseconds(10)) }
         try expect(failed, "새 해 home hello ", "failedRewritePreservesAndDrainsTyping")
-        try require(failed.errors.count == 1 && failed.errors[0].contains("앞 단어 교정") && !failed.errors[0].contains("Space"),
-                    "rewriteFailureDoesNotOfferInvalidRetry")
+        try require(failed.errors.count == 1 && failed.errors.first?.localizedDescription == failed.selectionError?.localizedDescription,
+                    "rewriteFailureReportsTheOriginalErrorOnce")
         defaults.set(false, forKey: PriorWordCorrectionSettings.enabledKey)
         failed.errors.removeAll()
         failed.type("to go home ")

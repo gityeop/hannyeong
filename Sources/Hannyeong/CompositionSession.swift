@@ -91,7 +91,7 @@ final class CompositionSession {
     private let hostBundleID: String?
     private let onPreviewStart: (() -> Void)?
     private let onPreview: ((String?) -> Void)?
-    private let onError: (String) -> Void
+    private let onError: ((Error) -> Void)?
     private let logger = Logger(subsystem: "com.yeop.inputmethod.Hannyeong", category: "Composition")
     private let diagnosticLogger = Logger(subsystem: "com.yeop.inputmethod.Hannyeong", category: "CommandDiagnostics")
     let diagnosticID = UUID().uuidString
@@ -140,7 +140,7 @@ final class CompositionSession {
          prepareNativeTerminalEdit: ((String) async throws -> NativeTerminalOwnership.Edit)? = nil,
          onPreviewStart: (() -> Void)? = nil,
          onPreview: ((String?) -> Void)? = nil,
-         onError: @escaping (String) -> Void) {
+         onError: ((Error) -> Void)? = nil) {
         self.client = client
         self.inlineComposition = InlineComposition(client: client)
         self.corrections = corrections ?? CorrectionStore.shared
@@ -255,7 +255,7 @@ final class CompositionSession {
 
     /// Immediate host commits preserve the Hangul composition shown to the user.
     func commitPending() {
-        if inlineTask != nil || rewriteTask != nil { cancelInlineEdit(); return }
+        if hasPendingRewrite { cancelInlineEdit(); return }
         if !rawText.isEmpty { commitHangul() }
     }
 
@@ -273,7 +273,7 @@ final class CompositionSession {
         inputGeneration += 1
         cancelLivePreviewTask()
         CommittedInputEvents.shared.cancel(owner: diagnosticID)
-        if inlineTask != nil || rewriteTask != nil { cancelInlineEdit() } else { commitPending() }
+        commitPending()
         onPreview?(nil)
         active = false
         feedback = nil
@@ -284,7 +284,7 @@ final class CompositionSession {
         inputGeneration += 1
         cancelLivePreviewTask()
         CommittedInputEvents.shared.cancel(owner: diagnosticID)
-        if inlineTask != nil || rewriteTask != nil { cancelInlineEdit() } else { commitPending() }
+        commitPending()
         reconsideration = nil
         onPreview?(nil)
         active = false
@@ -306,7 +306,6 @@ final class CompositionSession {
         }
         lastCommit = nil
         feedback = nil
-        AppSupport.shared.clearError()
     }
 
     func commitHangul() {
@@ -322,7 +321,6 @@ final class CompositionSession {
             }
             lastCommit = nil
             feedback = nil
-            AppSupport.shared.clearError()
         } catch { report(error) }
     }
 
@@ -365,13 +363,12 @@ final class CompositionSession {
             contextSelection = client.selectedRange()
             lastCommit = conversion
             feedback = nil
-            AppSupport.shared.clearError()
             logDiagnostic("toggle_complete")
         } catch {
             logFailure(error, stage: "toggle_failed")
             let failure = error as NSError
             logger.error("Language toggle failed: \(failure.domain, privacy: .public) code \(failure.code)")
-            onError("방금 입력한 단어를 바꾸지 못했습니다. 입력 위치를 확인해 주세요.")
+            onError?(error)
         }
     }
 
@@ -713,7 +710,6 @@ final class CompositionSession {
                                 range: NSRange(location: target.range.location, length: text.utf16.count), source: .correction)
         contextSelection = client.selectedRange()
         feedback = nil
-        AppSupport.shared.clearError()
         logger.notice("User correction saved")
         let candidates = try CandidateBuilder.candidates(for: target.raw, includeSplits: true)
         let local = try localClient ?? LocalModelService.client()
@@ -964,7 +960,6 @@ final class CompositionSession {
                         self.lastCommit?.range = NSRange(location: caret.location - anchor.text.utf16.count,
                                                         length: anchor.text.utf16.count)
                     }
-                    AppSupport.shared.clearError()
                 } catch {
                     self.failAutomaticEdit(error, generation: generation)
                     return
@@ -1009,7 +1004,6 @@ final class CompositionSession {
             logDiagnostic("commit_complete_without_edit_target")
         }
         if !rawText.isEmpty { render() }
-        AppSupport.shared.clearError()
     }
 
     private func insertPending(_ text: String) throws {
@@ -1060,7 +1054,6 @@ final class CompositionSession {
                     self.inlineComposition.replaceSelected(text, previous: expected, committing: committing)
                     try self.checkInput(generation)
                 }
-                AppSupport.shared.clearError()
             } catch {
                 self.failAutomaticEdit(error, generation: generation)
                 return
@@ -1083,22 +1076,37 @@ final class CompositionSession {
 
     private func failAutomaticEdit(_ error: Error, generation: Int) {
         guard inputGeneration == generation else { return }
-        cancelInlineEdit()
-        active = false
-        onPreview?(nil)
-        if !(error is CancellationError) { report(error, committedEdit: true) }
+        if error is CancellationError {
+            cancelInlineEdit()
+            onPreview?(nil)
+            return
+        }
+
+        // Discard the failed edit while keeping both input queues in their original order.
+        resetInlineEdit()
+        let recoveryGeneration = inputGeneration
+        rewriteTask = Task { @MainActor [weak self] in
+            guard let self, self.active, self.inputGeneration == recoveryGeneration else { return }
+            self.rewriteTask = nil
+            await self.drainBufferedEvents()
+        }
+        report(error, committedEdit: true)
     }
 
     private func cancelInlineEdit() {
+        resetInlineEdit()
+        bufferedEvents.removeAll()
+        CommittedInputEvents.shared.cancel(owner: diagnosticID)
+    }
+
+    private func resetInlineEdit() {
         inputGeneration += 1
         cancelLivePreview()
         inlineTask?.cancel()
         rewriteTask?.cancel()
         inlineTask = nil
         rewriteTask = nil
-        bufferedEvents.removeAll()
         drainingEvents = false
-        CommittedInputEvents.shared.cancel(owner: diagnosticID)
         raw = ""
         words.removeAll()
         reconsideration = nil
@@ -1163,7 +1171,12 @@ final class CompositionSession {
                         return
                     }
                 }
-                catch { failAutomaticEdit(error, generation: generation); return }
+                catch {
+                    guard inputGeneration == generation else { return }
+                    cancelInlineEdit()
+                    if !(error is CancellationError) { report(error, committedEdit: true) }
+                    return
+                }
             }
         }
     }
@@ -1196,13 +1209,7 @@ final class CompositionSession {
         if let failure = error as? CommittedTextSelection.Failure {
             diagnosticLogger.error("Committed selection failed: \(failure.localizedDescription, privacy: .public)")
         }
-        if case CommittedTextSelection.Failure.permissionRequired = error {
-            onError(error.localizedDescription)
-        } else if isCommittedEdit {
-            onError("자동 교정을 중단했습니다. 입력한 내용과 커서 위치를 확인해 주세요.")
-        } else {
-            onError("판별하지 못했습니다. Space로 다시 시도하거나 Esc로 원문을 확정하세요.")
-        }
+        onError?(error)
     }
 
     // Metadata only: never include raw input, converted text, context, or correction candidates.

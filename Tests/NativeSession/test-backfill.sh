@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $# -lt 1 ]]; then
-    echo "usage: $0 <absolute local-runtime.json> [--issue-4-only|--registered-entities-only]" >&2
+    echo "usage: $0 <absolute local-runtime.json> [--issue-4-only|--registered-entities-only|--recovery-only]" >&2
     exit 2
 fi
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
@@ -20,7 +20,7 @@ for TASK_SOURCE in Sources/Hannyeong/*.swift; do
     [[ "$TASK_SOURCE" == */Application.swift ]] || TASK_SOURCES+=("$TASK_SOURCE")
 done
 TASK_TESTS=(BackfillQA RightCommandQA)
-if [[ "${1:-}" == --registered-entities-only ]]; then TASK_TESTS=(BackfillQA); fi
+if [[ "${1:-}" == --registered-entities-only || "${1:-}" == --recovery-only ]]; then TASK_TESTS=(BackfillQA); fi
 for TASK_TEST in "${TASK_TESTS[@]}"; do
     xcrun swiftc -parse-as-library -swift-version 5 -O \
         -I "$TASK_PRODUCTS" -I Sources/CLibHangul -I .build/dependencies/libhangul/include/hangul-1.0 \

@@ -7,6 +7,7 @@ import os
 final class CommittedInputEvents: @unchecked Sendable {
     static let shared = CommittedInputEvents()
     static let forwardedEventMarker: Int64 = 0x48414E4657444544
+    private let logger = Logger(subsystem: "com.yeop.inputmethod.Hannyeong", category: "Composition")
     private let lock = NSLock()
     private var tap: CFMachPort?
     private var owner: String?
@@ -118,10 +119,17 @@ final class CommittedInputEvents: @unchecked Sendable {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             failed = true
             owner = nil
+            processID = nil
+            activationProcessID = nil
             events.removeAll()
-            Logger(subsystem: "com.yeop.inputmethod.Hannyeong", category: "Composition")
-                .error("Committed input event tap stopped")
-            Task { @MainActor in AppSupport.shared.showError("입력 대기를 처리하지 못했습니다. 한녕을 다시 실행해 주세요.") }
+            releasing = false
+            logger.error("Committed input event tap stopped; timeout=\(type == .tapDisabledByTimeout)")
+            if type == .tapDisabledByTimeout, let tap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+                failed = !CGEvent.tapIsEnabled(tap: tap)
+                if failed { logger.error("Committed input event tap could not be re-enabled") }
+                else { logger.notice("Committed input event tap resumed") }
+            }
             return Unmanaged.passUnretained(event)
         }
         guard owner != nil,
