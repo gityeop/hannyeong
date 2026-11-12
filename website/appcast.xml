@@ -3,6 +3,23 @@
     <channel>
         <title>Hannyeong</title>
         <item>
+            <title>0.4.20</title>
+            <pubDate>Thu, 12 Nov 2026 16:02:06 +0900</pubDate>
+            <link>https://gityeop.github.io/hannyeong/</link>
+            <sparkle:version>181.5</sparkle:version>
+            <sparkle:shortVersionString>0.4.20</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.20/Hannyeong-0.4.20-arm64.zip" length="53497525" type="application/octet-stream" sparkle:edSignature="6M2kGEl1VGwPsvcgtZde0hBXm613eiu1vbTovE3k7pdcNdlxnLByuFSpnW+cdpmZ8SGZFQfP6C9Mdn3Jm+ORDQ==" />
+            <description>&lt;h2&gt;한녕 0.4.20&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;앱을 전환하고 바로 타이핑할 때 한글 입력이 더 안정적으로 시작되도록 개선했습니다.&lt;/li&gt;
+&lt;li&gt;자동 교정이 중단돼도 같은 입력창에서 이어서 친 글자가 빠지지 않도록 개선했습니다.&lt;/li&gt;
+&lt;li&gt;타이핑을 방해하던 오류창을 없앴습니다. 권한 설정이 필요하면 한녕 설정에서 안내합니다.&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+        </item>
+        <item>
             <title>0.4.19</title>
             <pubDate>Sun, 08 Nov 2026 00:12:20 +0900</pubDate>
             <link>https://gityeop.github.io/hannyeong/</link>
