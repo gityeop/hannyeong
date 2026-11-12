@@ -3,6 +3,22 @@
     <channel>
         <title>Hannyeong</title>
         <item>
+            <title>0.4.21</title>
+            <pubDate>Thu, 12 Nov 2026 18:08:45 +0900</pubDate>
+            <link>https://gityeop.github.io/hannyeong/</link>
+            <sparkle:version>182</sparkle:version>
+            <sparkle:shortVersionString>0.4.21</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.21/Hannyeong-0.4.21-arm64.zip" length="53499831" type="application/octet-stream" sparkle:edSignature="+YTa9jU/JUB/I5Ahlpnv+WBt8rIz0o1GrUhOct3vGiXgPMgOpx3hZfb8epMs26/eQ2UMWK453d1TO5ygNKJFAQ==" />
+            <description>&lt;h2&gt;한녕 0.4.21&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;카카오톡에서 백스페이스를 여러 번 눌러야 글자가 지워지거나, 끝이 아닌 앞 글자가 바뀌던 문제를 수정했습니다.&lt;/li&gt;
+&lt;li&gt;노션에서 백스페이스를 누르면 글자가 한꺼번에 지워지거나 아래 줄 내용이 따라 붙던 문제를 수정했습니다.&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+        </item>
+        <item>
             <title>0.4.20</title>
             <pubDate>Thu, 12 Nov 2026 16:02:06 +0900</pubDate>
             <link>https://gityeop.github.io/hannyeong/</link>
