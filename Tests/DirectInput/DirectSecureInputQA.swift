@@ -9,10 +9,12 @@ import Carbon
     var selected: [String] = []
     var entries = 0
     var restorations = 0
+    var endedEpisodes: [Bool] = []
     var time: TimeInterval = 0
     init(_ source: String) { self.source = source }
     func monitor(_ owner: String) -> DirectSecureInputSource {
         DirectSecureInputSource(sourceID: owner, entering: { self.entries += 1 }, restored: { self.restorations += 1 },
+            ownedEpisodeEnded: { self.endedEpisodes.append($0) },
             isSecure: { self.secure || self.sudoPassword },
             currentSource: { self.reads += 1; return self.source },
             selectSource: { self.selected.append($0); self.source = $0 }, now: { self.time })
@@ -102,7 +104,10 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
                 for _ in 0..<10_000 { m.check() }
                 try require(s.reads == reads, "Unchanged secure ticks queried sources")
                 s.secure = false; s.settleExit(m); m.sourceChanged()
-                try require(s.source == owner && s.entries == cycle && !m.isTemporaryABC(abc), "Secure exit did not restore Direct once")
+                try require(s.source == owner && s.entries == cycle && !m.isTemporaryABC(abc),
+                            "Secure exit did not restore Direct once")
+                try require(s.endedEpisodes == Array(repeating: true, count: cycle),
+                            "Secure exit did not report completion with the owner restored")
             }
             try require(s.selected == [abc, owner, abc, owner], "A secure transition was repeated")
         }
@@ -116,14 +121,29 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
         for original in [abc, owner == "com.yeop.inputmethod.Hannyeong" ? "com.yeop.inputmethod.HannyeongDirectSource" : "com.yeop.inputmethod.Hannyeong"] {
             let s = State(original), m = s.monitor(owner)
             s.secure = true; m.check(); s.secure = false; s.settleExit(m)
-            try require(s.source == original && s.selected.isEmpty && s.entries == 0, "Direct changed an unrelated input source")
+            try require(s.source == original && s.selected.isEmpty && s.entries == 0 && s.endedEpisodes.isEmpty,
+                        "Direct took ownership of an unrelated secure episode")
         }
         do {
             let s = State(owner), m = s.monitor(owner)
+            let gureum = "org.youknowone.inputmethod.Gureum.han2"
             s.secure = true; m.check()
-            s.source = "org.youknowone.inputmethod.Gureum.han2"; m.sourceChanged()
+            s.source = gureum; m.sourceChanged()
+            let selectedDuringSecureInput = try m.requestReselection()
+            try require(!selectedDuringSecureInput && s.source == gureum && s.selected == [abc],
+                        "A recovery request selected the owner during secure input")
+            s.sudoPassword = true
             s.secure = false; s.settleExit(m)
-            try require(s.source == "org.youknowone.inputmethod.Gureum.han2" && s.selected == [abc], "Secure exit overrode a user's other source selection")
+            let selectedDuringSudoPassword = try m.requestReselection()
+            try require(!selectedDuringSudoPassword && s.source == gureum && s.endedEpisodes.isEmpty,
+                        "A recovery request selected the owner during a sudo password prompt")
+            s.sudoPassword = false; s.settleExit(m)
+            try require(s.source == gureum && s.selected == [abc] && s.endedEpisodes == [false],
+                        "Secure exit did not report completion while preserving the user's source")
+            let selectedAfterRelease = try m.requestReselection()
+            try require(selectedAfterRelease && s.source == owner && s.selected == [abc, owner],
+                        "An explicit recovery request did not reselect the owner")
+            print("PASS explicit recovery preserves protection and reselects \(owner) after release")
         }
         do {
             let s = State(abc), m = s.monitor(owner)

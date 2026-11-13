@@ -12,6 +12,7 @@ final class DirectSecureInputSource: NSObject {
     private let selectSource: @MainActor (String) throws -> Void
     private let entering: @MainActor () -> Void
     private let restored: @MainActor () -> Void
+    private let ownedEpisodeEnded: @MainActor (Bool) -> Void
     private let poll: @MainActor () -> Void
     private let now: @MainActor () -> TimeInterval
     private let logger = Logger(subsystem: "com.yeop.HannyeongInputRuntime", category: "SecureInput")
@@ -24,6 +25,7 @@ final class DirectSecureInputSource: NSObject {
 
     init(sourceID: String, entering: @escaping @MainActor () -> Void,
          restored: @escaping @MainActor () -> Void = {},
+         ownedEpisodeEnded: @escaping @MainActor (Bool) -> Void = { _ in },
          isSecure: @escaping @MainActor () -> Bool = { IsSecureEventInputEnabled() },
          currentSource: @escaping @MainActor () -> String = DirectSecureInputSource.systemSource,
          selectSource: @escaping @MainActor (String) throws -> Void = DirectSecureInputSource.systemSelect,
@@ -32,6 +34,7 @@ final class DirectSecureInputSource: NSObject {
         self.sourceID = sourceID
         self.entering = entering
         self.restored = restored
+        self.ownedEpisodeEnded = ownedEpisodeEnded
         self.isSecure = isSecure
         self.currentSource = currentSource
         self.selectSource = selectSource
@@ -65,6 +68,12 @@ final class DirectSecureInputSource: NSObject {
         update(enabled: isSecure(), source: currentSource())
     }
 
+    func requestReselection() throws -> Bool {
+        guard !isSecure() else { return false }
+        if currentSource() != sourceID { try selectSource(sourceID) }
+        return true
+    }
+
     func isTemporaryABC(_ source: String) -> Bool {
         secure && restoreDirect && source == Self.ascii
     }
@@ -86,7 +95,8 @@ final class DirectSecureInputSource: NSObject {
                     logger.notice("Secure input source selected: ABC")
                 }
             } else {
-                let restore = secure && restoreDirect && (source == Self.ascii || source == sourceID)
+                let ownedEpisode = secure && restoreDirect
+                let restore = ownedEpisode && (source == Self.ascii || source == sourceID)
                 if restore {
                     // Login submission can briefly release secure input before its final
                     // source change. Finish only after the source and secure exit are quiet.
@@ -117,11 +127,13 @@ final class DirectSecureInputSource: NSObject {
                     restored()
                     logger.notice("Secure input ended; input source restored")
                 }
+                if ownedEpisode { ownedEpisodeEnded(restore) }
             }
         } catch {
             failed = true
             stop()
             logger.error("Secure input source selection failed: \(String(describing: error), privacy: .public)")
+            if secure && restoreDirect { ownedEpisodeEnded(false) }
         }
     }
 
