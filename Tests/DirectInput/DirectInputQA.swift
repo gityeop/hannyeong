@@ -102,6 +102,7 @@ private final class Harness {
     var outputEventCount = 0
     var inEventTap = false
     var nativeReplacements = 0
+    var nativeHostDeletionResets = 0
     var failNativeReplacement = false
     var ignoredEmptyNativeCommits = 0
     var nativeSheetReplacements = 0
@@ -150,7 +151,9 @@ private final class Harness {
         try require(previous.length >= count, "Notion replacement exceeded the UTF16 suffix")
         text = previous.substring(to: previous.length - count) + replacement
         nativeReplacements += 1
-    } : nil,
+    } : nil, resetNativeText: { [self] afterHostDeletion in
+        if afterHostDeletion { nativeHostDeletionResets += 1 }
+    },
     refreshRoute: { [self] reason in
         routeRefreshes += 1
         routeMonitor?.refresh(reason)
@@ -419,6 +422,66 @@ struct DirectInputQA {
         try require(result.text == preferred,
                     "Direct registered rule overrode an explicit correction")
         print("PASS Direct registered spellings, physical Shift+=, Return and saved correction priority")
+    }
+
+    @MainActor static func chatJamoChecks(_ runtime: DirectRuntime) async throws {
+        let samples = [
+            ("rc", "ㄱㅊ", "배달 늦어도 나는 ", "We tagged the build as "),
+            ("de", "ㅇㄷ", "나 역에 내렸어. 너 지금 ", "I flew to Rio "),
+            ("re", "ㄱㄷ", "지금 주차 중이야. 1분만 ", "The melody goes do, "),
+            ("cc", "ㅊㅊ", "대회에서 일등 했다며? ", "I took an extra 5 "),
+            ("cz", "ㅊㅋ", "생일 ", "I set the country to "),
+            ("rt", "ㄳ", "충전기 빌려줘서 ", "I shortened reaction time to "),
+        ]
+        for (raw, jamo, korean, english) in samples {
+            for (before, expected) in [("", jamo), (korean, jamo), (english, raw)] {
+                var session = DirectSession()
+                session.recordSeparator(before)
+                var host = before
+                for letter in raw {
+                    apply(try session.append(String(letter)), to: &host)
+                }
+                host += " "
+                session.beginBoundary(" ")
+                let snapshot = session.snapshot
+                guard case .boundary(let reading) = try await runtime.decide(snapshot),
+                      let edit = try session.finish(reading, for: snapshot) else {
+                    throw DirectFailure(detail: "The chat jamo decision did not commit: \(raw)")
+                }
+                apply(edit, to: &host)
+                try require(host == before + expected + " ",
+                            "Chat jamo \(raw) after \(before.debugDescription): got \(host.debugDescription)")
+            }
+        }
+        print("PASS 18 standalone, Korean and English chat-jamo input commits")
+    }
+
+    @MainActor static func notionStandaloneCompoundBackspace(_ runtime: DirectRuntime) async throws {
+        for (keys, compound) in [("rt", "ㄳ"), ("qt", "ㅄ")] {
+            let h = Harness(nativeMode: true, runtime: runtime)
+            h.focusChecks.hostBundleID = "notion.id"
+            h.input.enableForQA()
+            h.input.updateRoute(try h.focusChecks.capture(h.pid), known: true)
+            h.input.configure(live: true, fixedEnglish: false, backfill: true)
+            h.text = "앞 "
+            h.type(keys)
+            try await h.waitForWake()
+            h.flushWake()
+            try await Task.sleep(for: .milliseconds(5))
+            try require(h.text == "앞 " + compound, "Notion did not display \(compound): \(h.text.debugDescription)")
+            let replacements = h.nativeReplacements
+            let keysDelivered = h.deliveredPhysical.count
+            let emitted = h.outputEventCount
+            h.key("", code: 51)
+            for _ in 0..<50 {
+                h.flushWake()
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            try require(h.text == "앞 " && h.nativeReplacements == replacements &&
+                        h.deliveredPhysical.count == keysDelivered + 1 && h.outputEventCount == emitted && h.errors.isEmpty,
+                        "One Notion Backspace over \(compound) left \(h.text.debugDescription) with \(h.nativeReplacements - replacements) IMK replacements")
+        }
+        print("PASS Notion standalone compound jamo: one host Backspace deletes ㄳ/ㅄ without a new composition")
     }
 
     @MainActor static func userEntityChecks(_ runtime: DirectRuntime, settings: RegisteredEntitySettings,
@@ -1205,6 +1268,8 @@ struct DirectInputQA {
         let runtime = try DirectRuntime(resources: resources, personalDirectory: directory,
                                         memory: CorrectionMemory(), entities: settings)
         _ = try await runtime.client.prepare()
+        try await chatJamoChecks(runtime)
+        try await notionStandaloneCompoundBackspace(runtime)
         try await registeredEntityChecks(runtime, settings: settings)
         try await userEntityChecks(runtime, settings: settings, directory: directory,
                                    frequencies: WordFrequencies.load(resources.appendingPathComponent("rule-lexicon.json")))
@@ -1510,7 +1575,11 @@ struct DirectInputQA {
             try await Task.sleep(for: .milliseconds(5))
             try require(h.text == "앞 먹었어" && h.ignoredEmptyNativeCommits == 0 && h.errors.isEmpty && h.input.enabled,
                         "\(bundleID) typing after Backspace left its owned caret: \(h.text)")
+            try require(h.nativeHostDeletionResets == 0, "Owned Backspaces were treated as external deletions")
             h.input.reset()
+            h.key("", code: 51)
+            try require(h.nativeHostDeletionResets == (bundleID == "notion.id" ? 1 : 0),
+                        "Only a Notion Backspace outside composition should invalidate the next caret anchor")
         }
         print("PASS Kakao/Notion IMK Backspace: one trailing unit per press with hosts that ignore empty commits, typing continues at the end")
     }

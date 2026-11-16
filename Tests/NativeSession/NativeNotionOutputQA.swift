@@ -4,6 +4,7 @@ import InputMethodKit
 private final class NotionView: NativeTextView {
     var reportedSelection: NSRange?
     var hideInitialSelection = false
+    var clampsReplacementAtEnd = false
     var replacements: [NSRange] = []
     var markedCalls = 0
     override func selectedRange() -> NSRange {
@@ -12,7 +13,20 @@ private final class NotionView: NativeTextView {
     }
     override func insertText(_ string: Any, replacementRange: NSRange) {
         replacements.append(replacementRange)
-        super.insertText(string, replacementRange: replacementRange)
+        var range = replacementRange
+        if clampsReplacementAtEnd {
+            let cached = reportedSelection
+            reportedSelection = nil
+            defer { reportedSelection = cached }
+            if range.location != NSNotFound {
+                let end = self.string.utf16.count
+                range.location = min(range.location, end)
+                range.length = min(range.length, end - range.location)
+            }
+            super.insertText(string, replacementRange: range)
+            return
+        }
+        super.insertText(string, replacementRange: range)
     }
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         markedCalls += 1
@@ -72,6 +86,26 @@ private final class NotionView: NativeTextView {
             preconditionFailure("A missing caret was fabricated")
         } catch is NativeNotionOutput.Failure {}
         precondition(other.replacements.count == count)
-        print("PASS Notion native output: observed stale cursor/selection, missing initial range, UTF16 prefix/trailing text, passed Space, field/client resets, no marked text, explicit failure before unknown replacement")
+
+        let retyped = NotionView(frame: .zero)
+        retyped.clampsReplacementAtEnd = true
+        let retypedOutput = NativeNotionOutput(client: retyped)
+        try retypedOutput.replace(deletingUTF16: 0, with: "ㄳ")
+        retypedOutput.reset()
+        retyped.insertNewline(nil)
+        retypedOutput.reset(afterHostDeletion: true)
+        retyped.deleteBackward(nil)
+        retypedOutput.reset(afterHostDeletion: true)
+        retyped.deleteBackward(nil)
+        precondition(retyped.string.isEmpty)
+        retyped.reportedSelection = NSRange(location: 1, length: 0)
+        try retypedOutput.replace(deletingUTF16: 0, with: "ㄱ")
+        retyped.reportedSelection = nil
+        try retypedOutput.replace(deletingUTF16: 1, with: "ㄳ")
+        guard retyped.string == "ㄳ" else {
+            fputs("Return and two Backspaces: expected ㄳ, got \(retyped.string).\n", stderr)
+            exit(1)
+        }
+        print("PASS Notion native output, including ㄳ → Return → Backspace ×2 → ㄳ after a stale selection")
     }
 }

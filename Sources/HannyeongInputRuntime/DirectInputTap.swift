@@ -27,7 +27,7 @@ final class DirectInputTap {
     private let managesInputSource: Bool
     private let replaceNativeSheet: ((String, String) throws -> Void)?
     private let replaceNativeText: ((Int, String) throws -> Void)?
-    private let resetNativeText: () -> Void
+    private let resetNativeText: (Bool) -> Void
     private let advanceNativeText: (Int) -> Void
     private let latencyLogger: Logger
     private var lastRoutingState: String?
@@ -93,7 +93,7 @@ final class DirectInputTap {
          sourceID: String = DirectInputSource.direct, managesInputSource: Bool = true,
          replaceNativeSheet: ((String, String) throws -> Void)? = nil,
          replaceNativeText: ((Int, String) throws -> Void)? = nil,
-         resetNativeText: @escaping () -> Void = {},
+         resetNativeText: @escaping (Bool) -> Void = { _ in },
          advanceNativeText: @escaping (Int) -> Void = { _ in },
          invalidateRoute: @escaping () -> Void = {},
          refreshRoute: @escaping (InputRouteMonitor.RefreshReason) -> Void = { _ in }) throws {
@@ -244,7 +244,7 @@ final class DirectInputTap {
     }
 
     /// Focus/navigation invalidates old corrections. Host commands are never retained.
-    func reset() {
+    func reset(afterHostDeletion: Bool = false) {
         cancelRightCommand()
         closeFeedback()
         generation += 1
@@ -255,7 +255,7 @@ final class DirectInputTap {
         basicDecision = nil
         nativeRepair = nil
         session.reset()
-        resetNativeText()
+        resetNativeText(afterHostDeletion)
         focus = nil
         routingEvent = nil
         passthroughWord = false
@@ -480,7 +480,7 @@ final class DirectInputTap {
         if !nativeClientRoute, routeChecking, textRoute != nil, !passthroughWord {
             if type == .keyDown {
                 if !modifiers.isEmpty || [36, 76, 48, 51, 53, 117, 115, 119, 116, 121, 123, 124, 125, 126].contains(code) {
-                    reset()
+                    reset(afterHostDeletion: code == 51 && usesNativeText)
                 } else {
                     do {
                         let text = try keyboard.text(event)
@@ -612,6 +612,13 @@ final class DirectInputTap {
         let code = event.getIntegerValueField(.keyboardEventKeycode)
         if code == 51, !session.raw.isEmpty {
             let previous = session.displayed
+            if usesNativeText, !nativeClientRoute, previous.count == 1,
+               "ㄳㄵㄶㄺㄻㄼㄽㄾㄿㅀㅄ".contains(previous) {
+                // Notion deletes a standalone compound jamo in one host edit.
+                // Discard both composing keys so the first cannot be inserted again.
+                reset(afterHostDeletion: true)
+                return false
+            }
             let edit = try session.backspace()
             if usesNativeText, !nativeClientRoute, let removed = previous.last {
                 // Notion's key handler removes the character before the caret even when IMK
@@ -639,7 +646,10 @@ final class DirectInputTap {
             requestDecision()
             return true
         }
-        if code == 51 { reset(); return false }
+        if code == 51 {
+            reset(afterHostDeletion: usesNativeText && !nativeClientRoute)
+            return false
+        }
         if code == 53 {
             if !session.raw.isEmpty { try emit(session.restoreRaw(), proxy) }
             reset()

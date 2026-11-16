@@ -12,6 +12,7 @@ final class NativeNotionOutput {
     private let client: any IMKTextInput
     let usesClientRoute: Bool
     private var caret: Int?
+    private var readCaretOnNextReplacement = false
 
     init(client: any IMKTextInput, usesClientRoute: Bool = false) {
         self.client = client
@@ -22,7 +23,10 @@ final class NativeNotionOutput {
         (self.client as AnyObject) === (client as AnyObject)
     }
 
-    func reset() { caret = nil }
+    func reset(afterHostDeletion: Bool = false) {
+        caret = nil
+        if afterHostDeletion { readCaretOnNextReplacement = true }
+    }
     func advance(_ text: String) { advance(utf16: text.utf16.count) }
     /// A negative count follows a host Backspace over owned text.
     func advance(utf16 count: Int) {
@@ -31,6 +35,12 @@ final class NativeNotionOutput {
     }
 
     func replace(deletingUTF16 length: Int, with text: String) throws {
+        if readCaretOnNextReplacement && length == 0 {
+            // Notion can still report the selection from before its Backspace.
+            // Insert at the host's current selection and read the range when a rewrite needs it.
+            client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            return
+        }
         if let caret {
             guard caret >= length else {
                 throw Failure(errorDescription: "The Notion edit exceeds its owned UTF-16 caret (caret=\(caret), delete=\(length)).")
@@ -60,6 +70,7 @@ final class NativeNotionOutput {
             let range = NSRange(location: selection.location - length, length: length)
             client.insertText(text, replacementRange: range)
             caret = range.location + text.utf16.count
+            readCaretOnNextReplacement = false
         }
     }
 }
