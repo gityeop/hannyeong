@@ -3,6 +3,23 @@
     <channel>
         <title>Hannyeong</title>
         <item>
+            <title>0.4.22</title>
+            <pubDate>Mon, 16 Nov 2026 16:00:40 +0900</pubDate>
+            <link>https://gityeop.github.io/hannyeong/</link>
+            <sparkle:version>183.4</sparkle:version>
+            <sparkle:shortVersionString>0.4.22</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>한녕 0.4.22</h2>
+<ul>
+<li>영어 <code>gg</code>와 <code>ㅎㅎ</code>처럼, 같은 키로 입력하는 표현을 문맥에 따라 더 잘 구분하도록 개선했습니다.</li>
+<li><code>ㄴㅇㅅ</code>, <code>ㄱㅊ</code>, <code>ㅇㄷ</code>, <code>ㄱㄷ</code>, <code>ㅊㅊ</code>, <code>ㅊㅋ</code> 같은 자주 사용되는 초성이 영문으로 바뀌던 문제를 개선했습니다.</li>
+<li>Notion에서 글자를 지우거나 다시 입력할 때 자음이 겹치고 영문이 남던 문제를 수정하였습니다.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.22/Hannyeong-0.4.22-arm64.zip" length="53500733" type="application/octet-stream" sparkle:edSignature="ixTdm1w6XC4gXVU9ALZa2XhitJ83qIaVPulumKmvhKlAeq+uQ2G2a8cJVaCi696MWIlxEIV7SMJ7BvTY0tgbCQ=="/>
+        </item>
+        <item>
             <title>0.4.21</title>
             <pubDate>Thu, 12 Nov 2026 18:08:45 +0900</pubDate>
             <link>https://gityeop.github.io/hannyeong/</link>
