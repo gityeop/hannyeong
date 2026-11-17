@@ -5,7 +5,6 @@ import HannyeongInputRuntime
 import HannyeongCore
 import os
 
-/// IMK supplies source identity and owns KakaoTalk and Notion keys.
 @MainActor
 final class NativeInputEngine: NSObject {
     static let shared = NativeInputEngine()
@@ -77,7 +76,7 @@ final class NativeInputEngine: NSObject {
             if !output.usesClientRoute { engine.reset() }
             logger.notice("Native controller bound for IMK keys; clientOwned=\(output.usesClientRoute) sourcePID=\(keyboardEvent.getIntegerValueField(.eventSourceUnixProcessID)) targetPID=\(keyboardEvent.getIntegerValueField(.eventTargetUnixProcessID))")
         }
-        if output.usesClientRoute { engine.setNativeClientRoute(true) }
+        if let owner = output.clientOwner { engine.setNativeClientOwner(owner) }
         return engine.handleNative(keyboardEvent)
     }
 
@@ -88,7 +87,7 @@ final class NativeInputEngine: NSObject {
 
     func deactivateNativeOutput(_ output: NativeNotionOutput) {
         guard nativeOutput === output else { return }
-        if output.usesClientRoute { engine?.setNativeClientRoute(false) }
+        if output.usesClientRoute { engine?.setNativeClientOwner(nil) }
         else { engine?.reset() }
         nativeOutput = nil
     }

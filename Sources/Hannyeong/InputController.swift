@@ -83,14 +83,18 @@ final class InputController: IMKInputController {
             directMode = direct
         }
         let bundleID = client.bundleIdentifier()
-        let usesClientRoute = bundleID == TypingEngine.clientOwnedBundleID ||
-            (bundleID == nil && NSWorkspace.shared.frontmostApplication?.bundleIdentifier == TypingEngine.clientOwnedBundleID)
+        let clientOwner: TypingEngine.ClientOwner?
+        if bundleID == nil, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == TypingEngine.ClientOwner.kakaoTalk.rawValue {
+            clientOwner = .kakaoTalk
+        } else {
+            clientOwner = TypingEngine.clientOwner(for: bundleID)
+        }
         if let output = nativeOutput, !direct || (output.usesClientRoute && !output.belongsTo(client)) {
             NativeInputEngine.shared.deactivateNativeOutput(output)
             nativeOutput = nil
         }
-        if direct, nativeOutput == nil, usesClientRoute || bundleID == "notion.id" {
-            nativeOutput = NativeNotionOutput(client: client, usesClientRoute: usesClientRoute)
+        if direct, nativeOutput == nil, clientOwner != nil || bundleID == "notion.id" {
+            nativeOutput = NativeNotionOutput(client: client, clientOwner: clientOwner)
         }
         NativeInputEngine.shared.activate(client: client)
         if direct {
@@ -107,7 +111,7 @@ final class InputController: IMKInputController {
         } else {
             prepareSession(for: client)
         }
-        shortcutLogger.notice("Input owner selected; experimental=\(direct) clientOwned=\(usesClientRoute && direct) legacySession=\(self.session != nil)")
+        shortcutLogger.notice("Input owner selected; experimental=\(direct) clientOwned=\(clientOwner != nil && direct) legacySession=\(self.session != nil)")
     }
 
     private func prepareSession(for client: any IMKTextInput) {

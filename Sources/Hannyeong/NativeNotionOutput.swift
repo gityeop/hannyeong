@@ -1,5 +1,6 @@
 import Foundation
 import InputMethodKit
+import HannyeongInputRuntime
 
 /// A controller owns its client and the UTF-16 caret advanced by its own edits.
 /// Chromium's selectedRange cache is not a confirmation of an explicit-range commit.
@@ -10,13 +11,14 @@ final class NativeNotionOutput {
     }
 
     private let client: any IMKTextInput
-    let usesClientRoute: Bool
+    let clientOwner: TypingEngine.ClientOwner?
+    var usesClientRoute: Bool { clientOwner != nil }
     private var caret: Int?
     private var readCaretOnNextReplacement = false
 
-    init(client: any IMKTextInput, usesClientRoute: Bool = false) {
+    init(client: any IMKTextInput, clientOwner: TypingEngine.ClientOwner? = nil) {
         self.client = client
-        self.usesClientRoute = usesClientRoute
+        self.clientOwner = clientOwner
     }
 
     func belongsTo(_ client: any IMKTextInput) -> Bool {
@@ -36,7 +38,7 @@ final class NativeNotionOutput {
 
     func replace(deletingUTF16 length: Int, with text: String) throws {
         if readCaretOnNextReplacement && length == 0 {
-            // Notion can still report the selection from before its Backspace.
+            // Chromium can still report the selection from before its Backspace.
             // Insert at the host's current selection and read the range when a rewrite needs it.
             client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
             return

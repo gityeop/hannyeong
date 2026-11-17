@@ -229,15 +229,16 @@ private final class Harness {
             var delivered = input.receive(proxy, event.type, event) != nil
             inEventTap = false
             if delivered, down, nativeMode, targetPID == nil,
-               focusChecks.hostBundleID == "notion.id" || focusChecks.hostBundleID == TypingEngine.clientOwnedBundleID {
+               focusChecks.hostBundleID == "notion.id" || TypingEngine.clientOwner(for: focusChecks.hostBundleID) != nil {
                 delivered = !input.receiveNative(event)
             }
             keyDurations.append(CFAbsoluteTimeGetCurrent() - began)
             if delivered {
                 if down { deliveredPhysical.append(text) }
                 host(event, physicalText: text)
-            } else if down, nativeMode, physicalCode == 51, focusChecks.hostBundleID == "notion.id" {
-                // Observed in Notion 2026-11-12: its key handler deletes even when IMK consumes Backspace.
+            } else if down, nativeMode, physicalCode == 51,
+                      ["notion.id", "com.openai.codex"].contains(focusChecks.hostBundleID) {
+                // Both Chromium hosts delete even when IMK consumes Backspace.
                 host(event, physicalText: text)
             }
         }
@@ -1362,10 +1363,10 @@ struct DirectInputQA {
             }
             defer { CFMachPortInvalidate(tap) }
             let h = Harness(nativeMode: true)
-            h.focusChecks.hostBundleID = TypingEngine.clientOwnedBundleID
+            h.focusChecks.hostBundleID = "com.kakao.KakaoTalkMac"
             h.input.enableForQA(keyboardTap: observer ? nil : tap, observerTap: observer ? tap : nil)
             h.input.clientOwnedPID = h.pid
-            h.input.setNativeClientRoute(true)
+            h.input.setNativeClientOwner(.kakaoTalk)
             let disabled = CGEvent(source: nil)!
             disabled.type = .tapDisabledByTimeout
             for _ in 0..<2 {
@@ -1544,13 +1545,13 @@ struct DirectInputQA {
     }
 
     @MainActor static func nativeBackspaceChecks() async throws {
-        for bundleID in [TypingEngine.clientOwnedBundleID, "notion.id"] {
+        for bundleID in ["com.kakao.KakaoTalkMac", "com.openai.codex", "notion.id"] {
             let h = Harness(nativeMode: true)
             h.focusChecks.hostBundleID = bundleID
             h.input.enableForQA()
-            if bundleID == TypingEngine.clientOwnedBundleID {
+            if let owner = TypingEngine.clientOwner(for: bundleID) {
                 h.input.clientOwnedPID = h.pid
-                h.input.setNativeClientRoute(true)
+                h.input.setNativeClientOwner(owner)
             } else {
                 h.input.updateRoute(try h.focusChecks.capture(h.pid), known: true)
             }
@@ -1578,36 +1579,41 @@ struct DirectInputQA {
             try require(h.nativeHostDeletionResets == 0, "Owned Backspaces were treated as external deletions")
             h.input.reset()
             h.key("", code: 51)
-            try require(h.nativeHostDeletionResets == (bundleID == "notion.id" ? 1 : 0),
-                        "Only a Notion Backspace outside composition should invalidate the next caret anchor")
+            let expectedResets = bundleID == "com.kakao.KakaoTalkMac" ? 0 : 1
+            try require(h.nativeHostDeletionResets == expectedResets,
+                        "\(bundleID) used the wrong caret anchor after a host Backspace")
         }
-        print("PASS Kakao/Notion IMK Backspace: one trailing unit per press with hosts that ignore empty commits, typing continues at the end")
+        print("PASS Kakao/OpenAI/Notion IMK Backspace: one trailing unit per press with hosts that ignore empty commits, typing continues at the end")
     }
 
     @MainActor static func clientOwnedDeliveryChecks() async throws {
-        let h = Harness(nativeMode: true)
-        h.focusChecks.hostBundleID = TypingEngine.clientOwnedBundleID
-        h.focusChecks.failsAX = true
-        h.input.enableForQA()
-        h.input.clientOwnedPID = h.pid
-        h.input.setNativeClientRoute(true)
-        h.input.updateRoute(nil, known: false)
-        h.input.beginRouteCheck()
-        h.key("d")
-        try require(h.text == "ㅇ" && h.nativeReplacements == 1 && h.outputEventCount == 0,
-                    "The first IMK key did not compose before AX focus was available")
-        try await h.waitForRequest()
-        h.input.updateRoute(nil, known: true)
-        h.type("kssud")
-        try require(h.text == "안녕" && h.focusChecks.captureCount == 0,
-                    "A background focus change interrupted the IMK word or the key waited for AX")
-        h.key("", code: 36)
-        try require(h.submitted == ["안녕"], "IMK input delayed or duplicated Return")
-        h.input.setNativeClientRoute(false)
-        try await h.resolve("d")
-        try require(h.text.isEmpty && h.errors.isEmpty,
-                    "A decision from the old IMK client changed text after deactivation")
-        print("PASS Kakao IMK ownership: first key composes without AX, Return passes once, and late results expire on deactivation")
+        for bundleID in ["com.kakao.KakaoTalkMac", "com.openai.codex"] {
+            let h = Harness(nativeMode: true)
+            h.focusChecks.hostBundleID = bundleID
+            h.focusChecks.failsAX = true
+            h.input.enableForQA()
+            if let owner = TypingEngine.clientOwner(for: bundleID) {
+                h.input.clientOwnedPID = h.pid
+                h.input.setNativeClientOwner(owner)
+            }
+            h.input.updateRoute(nil, known: false)
+            h.input.beginRouteCheck()
+            h.key("d")
+            try require(h.text == "ㅇ" && h.nativeReplacements == 1 && h.outputEventCount == 0,
+                        "\(bundleID) did not compose its first IMK key before AX focus was available: \(h.text)")
+            try await h.waitForRequest()
+            h.input.updateRoute(nil, known: true)
+            h.type("kssud")
+            try require(h.text == "안녕" && h.focusChecks.captureCount == 0,
+                        "\(bundleID) lost compose state or waited for AX focus: \(h.text)")
+            h.key("", code: 36)
+            try require(h.submitted == ["안녕"], "\(bundleID) delayed or duplicated Return")
+            h.input.clientOwnedPID = nil
+            try await h.resolve("d")
+            try require(h.text.isEmpty && h.errors.isEmpty,
+                        "\(bundleID) applied a decision to the old IMK client after deactivation")
+        }
+        print("PASS Kakao/OpenAI IMK ownership: first key composes without AX, Return passes once, and late results expire on deactivation")
     }
 
     @MainActor static func notionNativeDeliveryChecks() async throws {

@@ -39,7 +39,8 @@ final class DirectInputTap {
     private var commandTap: CFMachPort?
     private var commandSource: CFRunLoopSource?
     private var textRoute: DirectFocus?
-    private var nativeClientRoute = false
+    private var nativeClientOwner: TypingEngine.ClientOwner?
+    private var nativeClientRoute: Bool { nativeClientOwner != nil }
     private var routeKnown = false
     private var routeChecking = false
     private var passthroughWord = false
@@ -73,7 +74,7 @@ final class DirectInputTap {
     var systemKeyboardPIDs: Set<Int64> = []
     var clientOwnedPID: pid_t? {
         didSet {
-            if oldValue != nil, clientOwnedPID != oldValue { setNativeClientRoute(false) }
+            if oldValue != nil, clientOwnedPID != oldValue { setNativeClientOwner(nil) }
         }
     }
 
@@ -265,11 +266,11 @@ final class DirectInputTap {
 
     func dismissCandidates() { closeFeedback(); requestDecision() }
 
-    func setNativeClientRoute(_ active: Bool) {
-        guard nativeClientRoute != active else { return }
+    func setNativeClientOwner(_ owner: TypingEngine.ClientOwner?) {
+        guard nativeClientOwner != owner else { return }
         reset()
-        nativeClientRoute = active
-        if active { session.setInitialLanguage(.korean) }
+        nativeClientOwner = owner
+        if owner != nil { session.setInitialLanguage(.korean) }
     }
 
     func beginRouteCheck() {
@@ -392,6 +393,7 @@ final class DirectInputTap {
     }
 
     private var usesNativeText: Bool { nativeClientRoute || (!managesInputSource && textRoute?.hostBundleID == "notion.id") }
+    private var hostDeletesOnBackspace: Bool { nativeClientOwner == .openAI || (usesNativeText && !nativeClientRoute) }
 
     private func yieldsKeyToInputClient(_ event: CGEvent) -> Bool {
         if nativeClientRoute { return true }
@@ -620,9 +622,8 @@ final class DirectInputTap {
                 return false
             }
             let edit = try session.backspace()
-            if usesNativeText, !nativeClientRoute, let removed = previous.last {
-                // Notion's key handler removes the character before the caret even when IMK
-                // consumes Backspace (observed 2026-11-12), so only the remainder is ours.
+            if hostDeletesOnBackspace, let removed = previous.last {
+                // Chromium deletes a character even when IMK consumes Backspace.
                 advanceNativeText(-String(removed).utf16.count)
                 nativeRepair = DirectSession.difference(from: String(previous.dropLast()), to: session.displayed)
                 let epoch = generation
@@ -647,7 +648,7 @@ final class DirectInputTap {
             return true
         }
         if code == 51 {
-            reset(afterHostDeletion: usesNativeText && !nativeClientRoute)
+            reset(afterHostDeletion: hostDeletesOnBackspace)
             return false
         }
         if code == 53 {
