@@ -53,9 +53,6 @@ final class NativeInputEngine: NSObject {
     }
 
     func activate(client: any IMKTextInput) {
-        if let output = nativeOutput, output.usesClientRoute, !output.belongsTo(client) {
-            deactivateNativeOutput(output)
-        }
         inputClient = client
         configure()
         synchronizeSource()
@@ -67,9 +64,6 @@ final class NativeInputEngine: NSObject {
             return false
         }
         guard let engine, engine.enabled, let keyboardEvent = event.cgEvent else { return false }
-        if output.usesClientRoute {
-            guard let inputClient, output.belongsTo(inputClient) else { return false }
-        }
         if nativeOutput !== output {
             if let current = nativeOutput { deactivateNativeOutput(current) }
             nativeOutput = output
