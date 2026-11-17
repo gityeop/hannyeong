@@ -129,10 +129,16 @@ final class InputController: IMKInputController {
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         if directMode {
-            if let event, event.type == .keyDown, let output = nativeOutput {
+            if let event, event.type == .keyDown, var output = nativeOutput {
                 if output.usesClientRoute {
-                    guard isActiveController, let sender = sender as? any IMKTextInput, output.belongsTo(sender) else {
+                    guard isActiveController, let sender = sender as? any IMKTextInput else {
                         return false
+                    }
+                    if !output.belongsTo(sender) {
+                        synchronizeMode(for: sender)
+                        guard let currentOutput = nativeOutput else { return false }
+                        output = currentOutput
+                        shortcutLogger.notice("Native input client rebound from key callback; controller=\(String(describing: ObjectIdentifier(self)), privacy: .public)")
                     }
                 }
                 return NativeInputEngine.shared.handleNative(event, output: output)
