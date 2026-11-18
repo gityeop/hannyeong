@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import HannyeongCore
+@testable import HannyeongInputRuntime
 
 private func require(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
     if try !value() { throw DirectFailure(detail: message) }
@@ -80,13 +81,27 @@ private final class Harness {
     let nativeMode: Bool
     let runtime: DirectRuntime?
     private(set) var runtimeBoundaryCount = 0
-    init(nativeMode: Bool = false, runtime: DirectRuntime? = nil) {
+    private let editor: CachedSelectionTextView?
+    private lazy var nativeOutput = editor.map { NativeNotionOutput(client: $0, clientOwner: .openAI) }
+    init(nativeMode: Bool = false, runtime: DirectRuntime? = nil, editor: CachedSelectionTextView? = nil) {
+        self.editor = editor
         self.nativeMode = nativeMode
         self.runtime = runtime
     }
     let proxy = CGEventTapProxy(bitPattern: 1)!
     let pid = getpid() + 1234
-    var text = ""
+    private var buffer = ""
+    var text: String {
+        get { editor?.string ?? buffer }
+        set {
+            if let editor {
+                editor.string = newValue
+                editor.setSelectedRange(NSRange(location: newValue.utf16.count, length: 0))
+            } else {
+                buffer = newValue
+            }
+        }
+    }
     var submitted: [String] = []
     var errors: [Error] = []
     var wakeCount = 0
@@ -144,6 +159,11 @@ private final class Harness {
     } : nil,
     replaceNativeText: nativeMode ? { [self] count, replacement in
         try require(!inEventTap, "Notion IPC ran while the event tap held the host queue")
+        if let nativeOutput {
+            try nativeOutput.replace(deletingUTF16: count, with: replacement)
+            nativeReplacements += 1
+            return
+        }
         if failNativeReplacement { throw DirectFailure(detail: "QA Notion replacement failed") }
         // Observed in KakaoTalk 2026-11-12: insertText("") with a replacement range changes nothing.
         if replacement.isEmpty { ignoredEmptyNativeCommits += 1; return }
@@ -152,8 +172,9 @@ private final class Harness {
         text = previous.substring(to: previous.length - count) + replacement
         nativeReplacements += 1
     } : nil, resetNativeText: { [self] reason in
+        nativeOutput?.reset(reason)
         if reason == .hostBackspace { nativeHostDeletionResets += 1 }
-    },
+    }, advanceNativeText: { [self] in nativeOutput?.advance(utf16: $0) },
     refreshRoute: { [self] reason in
         routeRefreshes += 1
         routeMonitor?.refresh(reason)
@@ -344,6 +365,12 @@ private final class Harness {
 struct DirectInputQA {
     @MainActor static func main() async {
         do {
+            if CommandLine.arguments.dropFirst().elementsEqual(["--native-editing"]) {
+                try await nativeBackspaceChecks()
+                try await clientCommandDeleteChecks()
+                try await clientOwnedDeliveryChecks()
+                return
+            }
             if CommandLine.arguments.contains("--event-tap-recovery") {
                 try processEventTapRecoveryChecks()
                 return
@@ -1614,24 +1641,30 @@ struct DirectInputQA {
 
         for (command, targeted): (Int64, Bool) in [(55, true), (54, true), (54, false)] {
             for commandReleasedFirst in [false, true] {
-                let h = Harness(nativeMode: true)
+                let editor = CachedSelectionTextView(frame: .zero)
+                editor.clampsReplacementAtEnd = true
+                let h = Harness(nativeMode: true, editor: editor)
+                let prefix = targeted ? "" : "📌 앞줄\n"
+                h.text = prefix
                 h.focusChecks.hostBundleID = "com.openai.codex"
                 h.input.enableForQA()
                 h.input.clientOwnedPID = h.pid
                 h.input.setNativeClientOwner(.openAI)
                 h.type("dkssud")
-                try require(h.text == "안녕", "OpenAI Command-Delete fixture did not start in Korean")
+                try require(h.text == prefix + "안녕", "OpenAI Command-Delete fixture did not start in Korean")
                 h.modifier(code: command, down: true, time: 1_000_000_000)
                 let target: pid_t = targeted ? h.pid : 0
                 // The host deletes the line without forwarding this shortcut to IMK.
                 try deleteKey(h, down: true, flags: .maskCommand, target: target)
-                try require(h.nativeHostDeletionResets == 0, "Command-Delete deferred the new word's caret like a plain Backspace")
-                h.text = ""
+                editor.setSelectedRange(NSRange(location: prefix.utf16.count, length: "안녕".utf16.count))
+                editor.deleteBackward(nil)
+                try require(editor.string == prefix, "Host failed to clear the current line")
+                editor.reportedSelection = NSRange(location: prefix.utf16.count, length: 0)
                 if !commandReleasedFirst { try deleteKey(h, down: false, flags: .maskCommand, target: target) }
                 h.modifier(code: command, down: false, time: 1_100_000_000)
                 if commandReleasedFirst { try deleteKey(h, down: false, flags: [], target: target) }
-                h.type("dkssud")
-                try require(h.text == "안녕" && h.input.enabled && h.errors.isEmpty,
+                h.type("rksk")
+                try require(h.text == prefix + "가나" && h.input.enabled && h.errors.isEmpty,
                             "OpenAI Command-Delete (command=\(command), command released first=\(commandReleasedFirst)) produced \(h.text.debugDescription), errors=\(h.errors)")
                 h.input.reset()
                 try await h.resolve("d")

@@ -14,3 +14,5 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: Tests/NativeSession/NativeInputEngineQA/run.sh
+      - run: scripts/prepare-dependencies.sh
+      - run: scripts/test-direct-input.sh --native-editing
