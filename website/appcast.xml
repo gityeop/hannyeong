@@ -3,6 +3,21 @@
     <channel>
         <title>Hannyeong</title>
         <item>
+            <title>0.4.23</title>
+            <pubDate>Wed, 18 Nov 2026 11:25:22 +0900</pubDate>
+            <link>https://gityeop.github.io/hannyeong/</link>
+            <sparkle:version>186</sparkle:version>
+            <sparkle:shortVersionString>0.4.23</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>한녕 0.4.23</h2>
+<ul>
+<li>실험 모드에서 ChatGPT와 Codex 입력창의 글자를 지운 뒤 바로 다시 쓸 때, 한글이 겹치거나 영문으로 남던 문제를 수정했습니다. 일반 ⌫, ⌥⌫, ⌘⌫, 전체 선택 후 삭제에 적용됩니다.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.23/Hannyeong-0.4.23-arm64.zip" length="53510236" type="application/octet-stream" sparkle:edSignature="ddKGBJNwcQhZrTc5jh1yfImFdvLsiBrWcbFxbXaNgHp0FavlBJ6Q7xpXf9K55Dt0rrIXRjDLYO2So9HWRhrYCA=="/>
+        </item>
+        <item>
             <title>0.4.22</title>
             <pubDate>Mon, 16 Nov 2026 16:00:40 +0900</pubDate>
             <link>https://gityeop.github.io/hannyeong/</link>
