@@ -78,7 +78,7 @@ private struct SetupError: LocalizedError {
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var server: IMKServer?
-    private let secureInputSource = SecureInputSource()
+    private let secureInputSource = SecureInputSource.shared
     private let rightCommandSource = RightCommandSourceSelection(sourceID: sourceID)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
