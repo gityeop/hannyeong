@@ -34,7 +34,7 @@ final class NativeNotionOutput {
         case .hostBackspace:
             caret = .readBeforeReplacement
         case .newContext:
-            if clientOwner == .openAI || caret != .readBeforeReplacement {
+            if caret != .readBeforeReplacement {
                 caret = .readBeforeInsertion
             }
         }

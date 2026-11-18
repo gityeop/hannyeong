@@ -77,14 +77,24 @@ private final class FocusChecks: @unchecked Sendable {
 }
 
 @MainActor
+private final class CachedEditorClient: NativeInputClient {
+    var cachedSelection: NSRange?
+    override func selectedRange() -> NSRange { cachedSelection ?? view.selectedRange() }
+}
+
+@MainActor
 private final class Harness {
     let nativeMode: Bool
     let runtime: DirectRuntime?
     private(set) var runtimeBoundaryCount = 0
     private let editor: CachedSelectionTextView?
-    private lazy var nativeOutput = editor.map { NativeNotionOutput(client: $0, clientOwner: .openAI) }
+    let editorClient = CachedEditorClient()
+    private lazy var nativeOutput = editor.map { _ in
+        NativeNotionOutput(client: editorClient, clientOwner: TypingEngine.clientOwner(for: focusChecks.hostBundleID))
+    }
     init(nativeMode: Bool = false, runtime: DirectRuntime? = nil, editor: CachedSelectionTextView? = nil) {
         self.editor = editor
+        editorClient.view = editor
         self.nativeMode = nativeMode
         self.runtime = runtime
     }
@@ -133,9 +143,11 @@ private final class Harness {
     }
     var requests: [(DirectSession.Snapshot, CheckedContinuation<DirectSession.Decision, Error>)] = []
     var remoteKeyboardPID: Int64?
+    var virtualKeyboardSource: CGEventSource?
+    var observerTargetPID: pid_t?
     lazy var input: DirectInputTap = try! DirectInputTap(decide: { [self] request in
         try await decision(request)
-    }, changed: { _ in }, failure: { [self] in errors.append($0) }, captureFocus: { [self] in
+    }, changed: { _ in }, failure: { [self] in errors.append($0) }, captureFocus: { [self] _ in
         try focusChecks.capture(pid)
     }, validateFocus: { [self] _ in
         try focusChecks.validate()
@@ -175,10 +187,27 @@ private final class Harness {
         nativeOutput?.reset(reason)
         if reason == .hostBackspace { nativeHostDeletionResets += 1 }
     }, advanceNativeText: { [self] in nativeOutput?.advance(utf16: $0) },
-    refreshRoute: { [self] reason in
+    initialOpenAIRoute: { [self] pid in
+        var route = try focusChecks.capture(pid)
+        route?.usesOpenAIKeyboardRoute = true
+        return route
+    }, refreshRoute: { [self] reason in
         routeRefreshes += 1
         routeMonitor?.refresh(reason)
     })
+
+    func focusOpenAI(confirmed: Bool = true) throws {
+        focusChecks.hostBundleID = TypingEngine.openAIKeyboardBundleID
+        try require(TypingEngine.clientOwner(for: focusChecks.hostBundleID) == nil,
+                    "The OpenAI editor registered two keyboard owners")
+        input.enableForQA()
+        input.openAIKeyboardPID = pid
+        input.updateRoute(nil, known: false)
+        guard confirmed else { return }
+        guard var route = try focusChecks.capture(pid) else { throw DirectFailure(detail: "Missing editor in QA") }
+        route.usesOpenAIKeyboardRoute = true
+        input.updateRoute(route, known: true)
+    }
 
     func decision(_ request: DirectSession.Snapshot) async throws -> DirectSession.Decision {
         if let runtime {
@@ -243,29 +272,33 @@ private final class Harness {
         else if code == 49 { text += " " }
         else { text += physicalText ?? KeyboardOutput.text(event) }
     }
-    func key(_ text: String, code: CGKeyCode? = nil, flags: CGEventFlags = [], targetPID: pid_t? = nil, forwardedToIMK: Bool = true) {
+    func key(_ text: String, code: CGKeyCode? = nil, flags: CGEventFlags = [], targetPID: pid_t? = nil) {
         let letterKeys: [Character: CGKeyCode] = ["a":0,"s":1,"d":2,"f":3,"h":4,"g":5,"z":6,"x":7,"c":8,"v":9,"b":11,"q":12,"w":13,"e":14,"r":15,"y":16,"t":17,"1":18,"2":19,"3":20,"4":21,"6":22,"5":23,"9":25,"7":26,"8":28,"0":29,"o":31,"u":32,"i":34,"p":35,"l":37,"j":38,"k":40,"n":45,"m":46,".":47," ":49]
         let physicalCode = code ?? letterKeys[text.lowercased().first!]!
         for down in [true, false] {
-            let event = CGEvent(keyboardEventSource: nil, virtualKey: physicalCode, keyDown: down)!
+            let event = CGEvent(keyboardEventSource: virtualKeyboardSource, virtualKey: physicalCode, keyDown: down)!
+            event.timestamp = DispatchTime.now().uptimeNanoseconds
             event.flags = flags
-            event.setIntegerValueField(.eventSourceUnixProcessID, value: 0)
             event.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(targetPID ?? pid))
-            // Physical events may have no Unicode payload at the session tap.
-            event.keyboardSetUnicodeString(stringLength: 0, unicodeString: nil)
+            if virtualKeyboardSource == nil {
+                event.setIntegerValueField(.eventSourceUnixProcessID, value: 0)
+                event.keyboardSetUnicodeString(stringLength: 0, unicodeString: nil)
+            }
             if let remoteKeyboardPID {
                 event.setIntegerValueField(.eventSourceUnixProcessID, value: remoteKeyboardPID)
                 let units = Array(text.utf16)
                 units.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: $0.count, unicodeString: $0.baseAddress) }
             }
             let began = CFAbsoluteTimeGetCurrent()
-            input.observeCommand(event.type, event)
+            let observed = event.copy()!
+            if let observerTargetPID { observed.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(observerTargetPID)) }
+            input.observeCommand(observed.type, observed)
             inEventTap = true
             let wasMarked = editor?.hasMarkedText() == true
             let reachedHost = input.receive(proxy, event.type, event) != nil
             var delivered = reachedHost
             inEventTap = false
-            if delivered, down, nativeMode, forwardedToIMK, targetPID == nil,
+            if delivered, down, nativeMode, targetPID == nil,
                focusChecks.hostBundleID == "notion.id" || TypingEngine.clientOwner(for: focusChecks.hostBundleID) != nil {
                 delivered = !input.receiveNative(event)
             }
@@ -274,7 +307,7 @@ private final class Harness {
                 if down { deliveredPhysical.append(text) }
                 host(event, physicalText: text)
             } else if reachedHost, down, nativeMode, physicalCode == 51,
-                      ["notion.id", "com.openai.codex"].contains(focusChecks.hostBundleID),
+                      focusChecks.hostBundleID == "notion.id",
                       !wasMarked, editor?.hasMarkedText() != true {
                 // Chromium dispatches the raw Backspace when no composition handled the key.
                 host(event, physicalText: text)
@@ -282,10 +315,10 @@ private final class Harness {
         }
     }
     func type(_ text: String) { for c in text { key(String(c)) } }
-    func softwareText(_ text: String) throws {
+    func softwareText(_ text: String, code: CGKeyCode = 0) throws {
         let source = CGEventSource(stateID: .privateState)!
         for down in [true, false] {
-            let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)!
+            let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)!
             event.flags = []
             event.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(pid))
             let units = Array(text.utf16)
@@ -297,10 +330,11 @@ private final class Harness {
             host(event)
         }
     }
-    func modifier(code: Int64 = 54, down: Bool, time: CGEventTimestamp, extra: CGEventFlags = []) {
+    func modifier(code: Int64 = 54, down: Bool, time: CGEventTimestamp, extra: CGEventFlags = [], targetPID: pid_t? = nil) {
         let event = CGEvent(source: nil)!
         event.type = .flagsChanged
         event.timestamp = time
+        if let targetPID { event.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(targetPID)) }
         event.setIntegerValueField(.keyboardEventKeycode, value: code)
         event.flags = (down ? CGEventFlags.maskCommand : []).union(extra)
         _ = input.receive(proxy, .flagsChanged, event)
@@ -1595,13 +1629,17 @@ struct DirectInputQA {
             editor?.clampsReplacementAtEnd = true
             editor?.commitsOnlyMarkedText = true
             let h = Harness(nativeMode: true, editor: editor)
-            h.focusChecks.hostBundleID = bundleID
-            h.input.enableForQA()
-            if let owner = TypingEngine.clientOwner(for: bundleID) {
-                h.input.clientOwnedPID = h.pid
-                h.input.setNativeClientOwner(owner)
+            if bundleID == "com.openai.codex" {
+                try h.focusOpenAI()
             } else {
-                h.input.updateRoute(try h.focusChecks.capture(h.pid), known: true)
+                h.focusChecks.hostBundleID = bundleID
+                h.input.enableForQA()
+                if let owner = TypingEngine.clientOwner(for: bundleID) {
+                    h.input.clientOwnedPID = h.pid
+                    h.input.setNativeClientOwner(owner)
+                } else {
+                    h.input.updateRoute(try h.focusChecks.capture(h.pid), known: true)
+                }
             }
             h.input.configure(live: true, fixedEnglish: false, backfill: true)
             h.text = "앞 "
@@ -1627,16 +1665,17 @@ struct DirectInputQA {
             try require(h.nativeHostDeletionResets == 0, "Owned Backspaces were treated as external deletions")
             h.input.reset()
             h.key("", code: 51)
-            let expectedResets = bundleID == "com.kakao.KakaoTalkMac" ? 0 : 1
+            let expectedResets = bundleID == "notion.id" ? 1 : 0
             try require(h.nativeHostDeletionResets == expectedResets,
                         "\(bundleID) used the wrong caret anchor after a host Backspace")
         }
-        print("PASS Kakao/OpenAI/Notion IMK Backspace: one trailing unit per press with hosts that ignore empty commits, typing continues at the end")
+        print("PASS KakaoTalk, OpenAI and Notion Backspace removes one composing unit per press and typing resumes at the caret")
     }
 
     @MainActor static func clientCommandDeleteChecks() async throws {
         func deleteKey(_ h: Harness, down: Bool, flags: CGEventFlags, target: pid_t) throws {
             let event = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: down)!
+            event.timestamp = DispatchTime.now().uptimeNanoseconds
             event.flags = flags
             event.setIntegerValueField(.eventSourceUnixProcessID, value: 0)
             event.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(target))
@@ -1646,11 +1685,14 @@ struct DirectInputQA {
         }
         for releasedFlags: CGEventFlags in [[], .maskCommand] {
             let h = Harness(nativeMode: true)
-            h.focusChecks.hostBundleID = "com.openai.codex"
-            h.input.enableForQA()
-            h.input.clientOwnedPID = h.pid
-            h.input.setNativeClientOwner(.openAI)
+            try h.focusOpenAI()
             h.key("d")
+            try require(h.text == "ㅇ", "The foreign-event check did not start in Korean: \(h.text)")
+            h.modifier(down: true, time: 1_000_000_000, targetPID: h.pid + 1)
+            h.modifier(down: false, time: 1_050_000_000, targetPID: h.pid + 1)
+            h.input.completeSingleTapForQA()
+            h.flushWake()
+            try require(h.text == "ㅇ", "Right Command in another app reversed the OpenAI word: \(h.text)")
             try deleteKey(h, down: true, flags: .maskCommand, target: h.pid + 1)
             try deleteKey(h, down: false, flags: releasedFlags, target: h.pid + 1)
             h.key("k")
@@ -1666,10 +1708,7 @@ struct DirectInputQA {
                 let h = Harness(nativeMode: true, editor: editor)
                 let prefix = targeted ? "" : "📌 앞줄\n"
                 h.text = prefix
-                h.focusChecks.hostBundleID = "com.openai.codex"
-                h.input.enableForQA()
-                h.input.clientOwnedPID = h.pid
-                h.input.setNativeClientOwner(.openAI)
+                try h.focusOpenAI()
                 h.type("dkssud")
                 try require(h.text == prefix + "안녕", "OpenAI Command-Delete fixture did not start in Korean")
                 h.modifier(code: command, down: true, time: 1_000_000_000)
@@ -1679,7 +1718,7 @@ struct DirectInputQA {
                 editor.setSelectedRange(NSRange(location: prefix.utf16.count, length: "안녕".utf16.count))
                 editor.deleteBackward(nil)
                 try require(editor.string == prefix, "Host failed to clear the current line")
-                editor.reportedSelection = NSRange(location: prefix.utf16.count, length: 0)
+                h.editorClient.cachedSelection = NSRange(location: prefix.utf16.count, length: 0)
                 if !commandReleasedFirst { try deleteKey(h, down: false, flags: .maskCommand, target: target) }
                 h.modifier(code: command, down: false, time: 1_100_000_000)
                 if commandReleasedFirst { try deleteKey(h, down: false, flags: [], target: target) }
@@ -1701,19 +1740,33 @@ struct DirectInputQA {
             ("Option-Backspace", "가나 ", .maskAlternate, 1, false),
             ("Command-Backspace", "📌 앞줄\n", .maskCommand, 1, false)
         ]
+        for editable in [true, false] {
+            let editor = CachedSelectionTextView(frame: .zero)
+            let h = Harness(nativeMode: true, editor: editor)
+            h.focusChecks.textEligible = editable
+            h.hostEditable = editable
+            try h.focusOpenAI(confirmed: false)
+            h.type("rksk")
+            if editable {
+                try require(h.text == "가나" && h.errors.isEmpty, "The first word in the OpenAI editor was \(h.text)")
+            } else {
+                try require(h.text.isEmpty && h.deliveredPhysical.joined() == "rksk" && h.outputEventCount == 0,
+                            "Cold input outside an OpenAI editor generated text or consumed a key")
+            }
+        }
+        try openAIVirtualKeyboardChecks()
         var failures: [String] = []
         for test in cases {
-            for forwarded in [true, false] {
-                let label = "\(test.name), \(forwarded ? "forwarded to IMK" : "host only")"
+            for targeted in [true, false] {
+                let label = "\(test.name), \(targeted ? "targeted HID event" : "untargeted HID event")"
                 let editor = CachedSelectionTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 160))
                 editor.clampsReplacementAtEnd = true
                 editor.commitsOnlyMarkedText = true
                 let h = Harness(nativeMode: true, editor: editor)
                 h.text = test.prefix
-                h.focusChecks.hostBundleID = "com.openai.codex"
-                h.input.enableForQA()
-                h.input.clientOwnedPID = h.pid
-                h.input.setNativeClientOwner(.openAI)
+                try h.focusOpenAI()
+                h.observerTargetPID = targeted ? h.pid : 0
+                h.virtualKeyboardSource = CGEventSource(stateID: .privateState)!
                 h.type("dkssud")
                 try require(h.text == test.prefix + "안녕", "\(label) failed to compose its initial word")
                 if test.selectAll {
@@ -1722,20 +1775,20 @@ struct DirectInputQA {
                 }
                 let beforeDelete = editor.selectedRange()
                 for _ in 0..<test.count {
-                    h.key("", code: 51, flags: test.deleteFlags, forwardedToIMK: forwarded)
+                    h.key("", code: 51, flags: test.deleteFlags)
                 }
                 try require(h.text == test.prefix, "\(label) left \(h.text.debugDescription) before retyping")
 
                 // IMK may still report the old caret after the host's delete or after the first new letter.
-                editor.reportedSelection = test.deleteFlags.isEmpty ? editor.selectedRange() : beforeDelete
+                h.editorClient.cachedSelection = test.deleteFlags.isEmpty ? editor.selectedRange() : beforeDelete
                 h.key("r")
-                if !test.deleteFlags.isEmpty { editor.reportedSelection = nil }
+                if !test.deleteFlags.isEmpty { h.editorClient.cachedSelection = nil }
                 h.key("k")
-                editor.reportedSelection = nil
+                h.editorClient.cachedSelection = nil
                 h.type("sk dkssud")
                 let expected = test.prefix + "가나 안녕"
                 let caret = editor.selectedRange()
-                if h.text != expected || caret != NSRange(location: expected.utf16.count, length: 0) || !h.input.enabled || !h.errors.isEmpty {
+                if h.text != expected || caret != NSRange(location: expected.utf16.count, length: 0) || !h.input.enabled || !h.errors.isEmpty || h.nativeReplacements != 0 {
                     failures.append("\(label): expected \(expected.debugDescription), got \(h.text.debugDescription), selection=\(caret), enabled=\(h.input.enabled), errors=\(h.errors.map(\.localizedDescription))")
                 }
                 if h.text == expected {
@@ -1755,34 +1808,85 @@ struct DirectInputQA {
         print("PASS OpenAI rapid delete and retype leaves 가나 안녕 at the caret after selection, repeated Backspace, word and line deletion")
     }
 
-    @MainActor static func clientOwnedDeliveryChecks() async throws {
-        for bundleID in ["com.kakao.KakaoTalkMac", "com.openai.codex"] {
-            let h = Harness(nativeMode: true)
-            h.focusChecks.hostBundleID = bundleID
-            h.focusChecks.failsAX = true
-            h.input.enableForQA()
-            if let owner = TypingEngine.clientOwner(for: bundleID) {
-                h.input.clientOwnedPID = h.pid
-                h.input.setNativeClientOwner(owner)
+    @MainActor private static func openAIVirtualKeyboardChecks() throws {
+        let source = CGEventSource(stateID: .privateState)!
+        for (code, payload): (CGKeyCode, String?) in [(15, nil), (40, nil), (1, nil), (49, nil), (15, "r"), (15, "한"), (0, "회의록 📌")] {
+            for down in [true, false] {
+                let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)!
+                event.flags = []
+                if let payload {
+                    let units = Array(payload.utf16)
+                    units.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: $0.count, unicodeString: $0.baseAddress) }
+                }
+                let original = KeyboardOutput.text(event)
+                try require(event.getIntegerValueField(.eventSourceUnixProcessID) > 0 && !original.isEmpty,
+                            "Quartz did not construct a producer event with Unicode")
+                try require(KeyboardInput.isSoftwareText(event, distinguishVirtualKeys: true) == (payload != nil),
+                            "Wrong Unicode origin for key \(code), down=\(down), payload=\(String(describing: payload))")
+                try require(KeyboardInput.isSoftwareText(event), "The default keyboard policy admitted a producer key")
+                try require(event.getIntegerValueField(.keyboardEventKeycode) == Int64(code) && KeyboardOutput.text(event) == original,
+                            "Classifying the virtual key mutated the original event")
             }
-            h.input.updateRoute(nil, known: false)
-            h.input.beginRouteCheck()
-            h.key("d")
-            try require(h.text == "ㅇ" && h.nativeReplacements == 1 && h.outputEventCount == 0,
-                        "\(bundleID) did not compose its first IMK key before AX focus was available: \(h.text)")
-            try await h.waitForRequest()
-            h.input.updateRoute(nil, known: true)
-            h.type("kssud")
-            try require(h.text == "안녕" && h.focusChecks.captureCount == 0,
-                        "\(bundleID) lost compose state or waited for AX focus: \(h.text)")
-            h.key("", code: 36)
-            try require(h.submitted == ["안녕"], "\(bundleID) delayed or duplicated Return")
-            h.input.clientOwnedPID = nil
-            try await h.resolve("d")
-            try require(h.text.isEmpty && h.errors.isEmpty,
-                        "\(bundleID) applied a decision to the old IMK client after deactivation")
         }
-        print("PASS Kakao/OpenAI IMK ownership: first key composes without AX, Return passes once, and late results expire on deactivation")
+        for (code, flags): (CGKeyCode, CGEventFlags) in [(51, []), (0, .maskCommand), (51, .maskAlternate), (51, .maskCommand)] {
+            for down in [true, false] {
+                let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)!
+                event.flags = flags
+                try require(!KeyboardInput.isSoftwareText(event, distinguishVirtualKeys: true) && event.flags == flags,
+                            "The OpenAI editing key \(code) lost its modifiers or became software text")
+            }
+        }
+        let editor = CachedSelectionTextView(frame: .zero)
+        let h = Harness(nativeMode: true, editor: editor)
+        try h.focusOpenAI(confirmed: false)
+        h.virtualKeyboardSource = source
+        h.type("rksk ")
+        try require(h.text == "가나 ", "Virtual keys with a producer PID left \(h.text.debugDescription) in the OpenAI editor")
+        let edits = h.outputEventCount
+        for (code, payload): (CGKeyCode, String) in [(15, "r"), (15, "한"), (0, "회의록 📌")] {
+            try h.softwareText(payload, code: code)
+        }
+        try require(h.text == "가나 r한회의록 📌" && h.outputEventCount == edits,
+                    "The OpenAI keyboard route converted or duplicated explicit Unicode: \(h.text.debugDescription)")
+        h.key("r", targetPID: h.pid + 1)
+        try require(h.deliveredPhysical.last == "r" && h.outputEventCount == edits,
+                    "The OpenAI editor converted a virtual key addressed to a different process")
+        let other = Harness(nativeMode: true)
+        other.virtualKeyboardSource = source
+        other.input.enableForQA()
+        other.type("rksk")
+        try require(other.text == "rksk" && other.deliveredPhysical.joined() == "rksk" && other.outputEventCount == 0,
+                    "The OpenAI virtual-key rule ran in another app")
+        print("PASS OpenAI key-down/up provenance: virtual keys compose, explicit Unicode passes once, and other targets retain their keyboard policy")
+    }
+
+    @MainActor static func clientOwnedDeliveryChecks() async throws {
+        let bundleID = TypingEngine.ClientOwner.kakaoTalk.rawValue
+        let h = Harness(nativeMode: true)
+        h.focusChecks.hostBundleID = bundleID
+        h.focusChecks.failsAX = true
+        h.input.enableForQA()
+        if let owner = TypingEngine.clientOwner(for: bundleID) {
+            h.input.clientOwnedPID = h.pid
+            h.input.setNativeClientOwner(owner)
+        }
+        h.input.updateRoute(nil, known: false)
+        h.input.beginRouteCheck()
+        h.key("d")
+        try require(h.text == "ㅇ" && h.nativeReplacements == 1 && h.outputEventCount == 0,
+                    "\(bundleID) did not compose its first IMK key before AX focus was available: \(h.text)")
+        try await h.waitForRequest()
+        h.input.updateRoute(nil, known: true)
+        h.type("kssud")
+        try require(h.text == "안녕" && h.focusChecks.captureCount == 0,
+                    "\(bundleID) lost compose state or waited for AX focus: \(h.text)")
+        h.key("", code: 36)
+        try require(h.submitted == ["안녕"], "\(bundleID) delayed or duplicated Return")
+        h.input.clientOwnedPID = nil
+        try await h.resolve("d")
+        try require(h.text.isEmpty && h.errors.isEmpty,
+                    "\(bundleID) applied a decision to the old IMK client after deactivation")
+        print("PASS IMK-owned clients: first key composes without AX, Return passes once, and late results expire on deactivation")
     }
 
     @MainActor static func notionNativeDeliveryChecks() async throws {

@@ -4,7 +4,8 @@ import Carbon
 /// Direct's input source uses ABC. Decode its physical keys even when CGEvent has no Unicode payload.
 struct KeyboardInput {
     /// Software Unicode payloads are text, not a physical key at their placeholder keycode.
-    static func isSoftwareText(_ event: CGEvent, systemKeyboardPIDs: Set<Int64> = []) -> Bool {
+    static func isSoftwareText(_ event: CGEvent, systemKeyboardPIDs: Set<Int64> = [],
+                               distinguishVirtualKeys: Bool = false) -> Bool {
         guard event.type == .keyDown || event.type == .keyUp,
               event.getIntegerValueField(.eventSourceUnixProcessID) > 0 else { return false }
         var length = 0
@@ -12,7 +13,20 @@ struct KeyboardInput {
         // macOS remote keyboards attach Unicode and a source PID to real virtual keys.
         // Keep multi-unit completed text intact, including text from the same producer.
         if length == 1, systemKeyboardPIDs.contains(event.getIntegerValueField(.eventSourceUnixProcessID)) { return false }
-        return length > 0
+        guard length > 0 else { return false }
+        guard distinguishVirtualKeys, length == 1, let probe = event.copy() else { return true }
+        // AppKit retranslates a virtual key. Explicit Unicode survives changes to its keycode.
+        probe.type = .keyDown
+        probe.flags = []
+        probe.setIntegerValueField(.keyboardEventKeycode, value: Int64(kVK_ANSI_A))
+        let first = NSEvent(cgEvent: probe)?.charactersIgnoringModifiers
+        probe.setIntegerValueField(.keyboardEventKeycode, value: Int64(kVK_ANSI_F))
+        let second = NSEvent(cgEvent: probe)?.charactersIgnoringModifiers
+        return first == nil || second == nil || first == second
+    }
+
+    static func isWordKey(_ text: String) -> Bool {
+        !text.isEmpty && text.utf8.allSatisfy { (65...90).contains($0) || (97...122).contains($0) }
     }
 
     static func isFunctionKey(_ code: Int64) -> Bool {

@@ -16,8 +16,8 @@ private final class SavePanelView: CoordinatorView {
         UserDefaults.standard.register(defaults: [CompositionPreviewSettings.liveEnabledKey: true])
         let first = CoordinatorView(frame: .zero)
         let second = CoordinatorView(frame: .zero)
-        let firstOutput = NativeNotionOutput(client: first, clientOwner: .openAI)
-        let secondOutput = NativeNotionOutput(client: second, clientOwner: .openAI)
+        let firstOutput = NativeNotionOutput(client: first, clientOwner: .kakaoTalk)
+        let secondOutput = NativeNotionOutput(client: second, clientOwner: .kakaoTalk)
         let engine = NativeInputEngine()
         let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
                                    windowNumber: 0, context: nil, characters: "d",

@@ -3,8 +3,8 @@ import ApplicationServices
 import os
 import Security
 
-/// Main-run-loop cache; every AX request and subscription runs on its serial worker.
-/// A key reads this cache only. Unknown/non-text routes never retain physical input.
+/// Caches AX focus on a serial worker. An unclassified OpenAI composer can also be
+/// identified synchronously when its own process receives its first letter.
 final class InputRouteMonitor: NSObject, @unchecked Sendable {
     enum RefreshReason: String {
         case routeChanged
@@ -13,6 +13,7 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
         case sourceResumed
         case appActivated
         case keyboardSourcesChanged
+        case keyboardTargetChanged
         case inputClientChanged
         case accessibilityChanged
         case menuOpened
@@ -44,6 +45,7 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
     private var menuDepth = 0
     private var lastTextRoute: Bool?
     private var activePID: pid_t?
+    private var foreignKeyboardPID: pid_t?
     private var textTarget: DirectFocus?
     // Worker-only ownership. Sources are installed on the main run loop.
     private var observers: [pid_t: AXObserver] = [:]
@@ -79,6 +81,14 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
         changed(nil, false, systemKeyboardPIDs)
     }
 
+    func setForeignKeyboardTarget(_ pid: pid_t?) {
+        guard !stopped, foreignKeyboardPID != pid else { return }
+        foreignKeyboardPID = pid
+        generation += 1
+        refreshReason = .keyboardTargetChanged
+        if !probing { probe() }
+    }
+
     @objc private func producersChanged() { refresh(.keyboardSourcesChanged) }
 
     func resume() {
@@ -90,6 +100,17 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
     private func eligibleTarget(_ target: DirectFocus?) -> DirectFocus? {
         // A menu blocks the editor behind it, but can own a search editor itself.
         menuDepth > 0 && target?.isMenuInput != true ? nil : target
+    }
+
+    func initialOpenAIRoute(for pid: pid_t) throws -> DirectFocus? {
+        guard !stopped, menuDepth == 0, activePID == pid, let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier == pid, app.bundleIdentifier == TypingEngine.openAIKeyboardBundleID
+        else { return nil }
+        let target = try DirectFocus.initialOpenAIComposer(pid: pid)
+        // An older worker probe must not supersede the focus just confirmed for this key.
+        generation += 1
+        textTarget = target
+        return target
     }
 
     #if DIRECT_INPUT_QA
@@ -108,6 +129,7 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
     @objc private func activationChanged(_ notification: Notification) {
         let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
         activePID = app?.processIdentifier
+        foreignKeyboardPID = nil
         foregroundChanged(app)
         menuDepth = 0
         refresh(.appActivated)
@@ -118,7 +140,7 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
         if probing && reason == .keyWhileChecking { return }
         generation += 1
         refreshReason = reason
-        checking()
+        if foreignKeyboardPID == nil || textTarget?.usesOpenAIKeyboardRoute != true { checking() }
         guard !probing else { return }
         probe()
     }
@@ -128,6 +150,7 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
         let epoch = generation
         let reason = refreshReason
         let activePID = self.activePID
+        let requestedKeyboardPID = foreignKeyboardPID
         let enqueuedAt = DispatchTime.now().uptimeNanoseconds
         queue.async { [self] in
             let startedAt = DispatchTime.now().uptimeNanoseconds
@@ -145,7 +168,7 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
                 #endif
                 let keyboardPIDs = try ProbeTiming.measure(&timing.keyboardSourcesUs, inspectKeyboardSources)
                 stage = "focus"
-                let focus = try ProbeTiming.measure(&timing.focusUs, DirectFocus.probe)
+                let focus = try ProbeTiming.measure(&timing.focusUs) { try DirectFocus.probe(for: requestedKeyboardPID) }
                 focusPID = focus.pid
                 stage = "observers"
                 try ProbeTiming.measure(&timing.observersUs) {
@@ -176,6 +199,8 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
                     logProbe("applied")
                     systemKeyboardPIDs = keyboardPIDs
                     let target = eligibleTarget(focus.target)
+                    // A foreign non-editor can own a shortcut while the OpenAI field keeps its word.
+                    if requestedKeyboardPID != nil, target == nil, textTarget?.usesOpenAIKeyboardRoute == true { return }
                     let isText = target != nil
                     if lastTextRoute != isText {
                         logger.notice("Input route classified; text=\(isText)")
@@ -188,7 +213,7 @@ final class InputRouteMonitor: NSObject, @unchecked Sendable {
                     if let failure = error as? DirectFocus.RouteError { logger.error("Input route inspection failed: \(failure.detail, privacy: .public) id=\(epoch)") }
                     else if let failure = error as? DirectFailure { logger.error("Input route inspection failed: \(failure.detail, privacy: .public) id=\(epoch)") }
                     else { logger.error("Input route inspection failed: \(String(describing: error), privacy: .private) id=\(epoch)") }
-                    checking()
+                    if requestedKeyboardPID == nil || textTarget?.usesOpenAIKeyboardRoute != true { checking() }
                 }
             }
         }

@@ -17,19 +17,24 @@ struct DirectFocus {
     var keyboardTargets: Set<Int64> = []
     var hostBundleID: String?
     var isMenuInput = false
+    var usesOpenAIKeyboardRoute = false
+    var keyboardOwnerForFocus: pid_t?
 
     struct Probe {
         let pid: pid_t?
         let target: DirectFocus?
     }
 
-    static func capture() throws -> DirectFocus? { try probe().target }
+    static func capture(for keyboardPID: pid_t?) throws -> DirectFocus? { try probe(for: keyboardPID).target }
 
-    static func probe() throws -> Probe {
-        let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 0.1)
+    static func probe(for keyboardPID: pid_t? = nil) throws -> Probe {
+        let application = NSWorkspace.shared.frontmostApplication
+        let openAIPID = application?.bundleIdentifier == TypingEngine.openAIKeyboardBundleID ? application?.processIdentifier : nil
+        let scopedPID = keyboardPID == nil || keyboardPID == openAIPID ? openAIPID : nil
+        let root = scopedPID.map(AXUIElementCreateApplication) ?? AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(root, 0.1)
         var value: CFTypeRef?
-        let focused = AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &value)
+        let focused = AXUIElementCopyAttributeValue(root, kAXFocusedUIElementAttribute as CFString, &value)
         if focused == .noValue { return .init(pid: nil, target: nil) }
         guard focused == .success, let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
             throw RouteError(detail: "Reading the input route failed (AX \(focused.rawValue)).")
@@ -39,6 +44,7 @@ struct DirectFocus {
         guard AXUIElementGetPid(focusedField, &pid) == .success, pid > 0 else {
             throw RouteError(detail: "The focused input field has no process owner.")
         }
+        if let scopedPID, scopedPID != pid { return .init(pid: pid, target: nil) }
         guard let field = try inputField(for: focusedField) else {
             return .init(pid: pid, target: nil)
         }
@@ -71,6 +77,7 @@ struct DirectFocus {
         var target = DirectFocus(pid: pid, field: field, window: window,
                                  commands: valueWritable.boolValue ? .keyBindings : .controlCharacters)
         target.hostBundleID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+        target.usesOpenAIKeyboardRoute = scopedPID != nil
         target.isMenuInput = try inputIsInMenu(field)
         if window == nil, let sheet = try inputSheet(for: field) {
             target.sheet = sheet
@@ -81,7 +88,46 @@ struct DirectFocus {
             target.keyboardTargets = Set(NSRunningApplication.runningApplications(withBundleIdentifier: serviceID)
                 .filter { $0.bundleURL?.path == servicePath }.map { Int64($0.processIdentifier) })
         }
+        if let keyboardPID {
+            guard target.acceptsKeyboardTarget(Int64(keyboardPID)) else { return .init(pid: pid, target: nil) }
+            target.keyboardOwnerForFocus = keyboardPID
+        }
         return .init(pid: pid, target: target)
+    }
+
+    /// Cold key admission only needs the foreground OpenAI composer's writable text area.
+    static func initialOpenAIComposer(pid: pid_t) throws -> DirectFocus? {
+        let messagingTimeout: Float = 0.012
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, messagingTimeout)
+        var value: CFTypeRef?
+        let focused = AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &value)
+        if focused == .noValue { return nil }
+        guard focused == .success, let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+            throw RouteError(detail: "Reading the OpenAI composer focus failed (AX \(focused.rawValue)).")
+        }
+        let field = value as! AXUIElement
+        var owner: pid_t = 0
+        guard AXUIElementGetPid(field, &owner) == .success, owner == pid else { return nil }
+        AXUIElementSetMessagingTimeout(field, messagingTimeout)
+        let names = [kAXRoleAttribute, kAXSubroleAttribute, kAXEnabledAttribute, kAXWindowAttribute]
+        var values: CFArray?
+        let result = AXUIElementCopyMultipleAttributeValues(field, names as CFArray, [], &values)
+        guard result == .success, let attributes = values as? [AnyObject], attributes.count == names.count else {
+            throw RouteError(detail: "Reading the OpenAI composer attributes failed (AX \(result.rawValue)).")
+        }
+        guard attributes[0] as? String == kAXTextAreaRole,
+              attributes[1] as? String != kAXSecureTextFieldSubrole,
+              attributes[2] as? Bool == true, CFGetTypeID(attributes[3]) == AXUIElementGetTypeID() else { return nil }
+        var writable: DarwinBoolean = false
+        let capability = AXUIElementIsAttributeSettable(field, kAXValueAttribute as CFString, &writable)
+        guard capability == .success else {
+            throw RouteError(detail: "Reading the OpenAI composer's editing capability failed (AX \(capability.rawValue)).")
+        }
+        guard writable.boolValue else { return nil }
+        return DirectFocus(pid: pid, field: field, window: (attributes[3] as! AXUIElement),
+                           commands: .keyBindings, hostBundleID: TypingEngine.openAIKeyboardBundleID,
+                           usesOpenAIKeyboardRoute: true)
     }
 
     /// aria-activedescendant gives AX focus to a suggestion while the editor keeps keyboard focus.
@@ -151,7 +197,7 @@ struct DirectFocus {
     }
 
     func validate() throws -> Bool {
-        guard let current = try Self.capture() else { return false }
+        guard let current = try Self.capture(for: keyboardOwnerForFocus ?? pid) else { return false }
         // System-wide focus covers non-activating panels such as Spotlight.
         guard matches(current) else { return false }
         // AX validation runs on a worker. TIS property access requires the main
@@ -174,7 +220,7 @@ struct DirectFocus {
     }
 
     func acceptsKeyboardTarget(_ targetPID: Int64) -> Bool {
-        targetPID <= 0 || targetPID == Int64(pid) || keyboardTargets.contains(targetPID)
+        (!usesOpenAIKeyboardRoute && targetPID <= 0) || targetPID == Int64(pid) || keyboardTargets.contains(targetPID)
     }
 
     static func inputSheet(for field: AXUIElement,
