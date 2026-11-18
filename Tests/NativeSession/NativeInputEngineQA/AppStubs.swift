@@ -16,7 +16,3 @@ final class CorrectionStore {
     let url = URL(fileURLWithPath: "/unused/coordinator-test")
     func load() -> Int { 0 }
 }
-enum NativeSheetReplacement {
-    struct Failure: LocalizedError { let errorDescription: String? }
-    static func replace(client: any IMKTextInput, expected: String, with replacement: String) throws {}
-}

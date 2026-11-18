@@ -96,7 +96,7 @@ final class InputController: IMKInputController {
         if direct, nativeOutput == nil, clientOwner != nil || bundleID == "notion.id" {
             nativeOutput = NativeNotionOutput(client: client, clientOwner: clientOwner)
         }
-        NativeInputEngine.shared.activate(client: client)
+        NativeInputEngine.shared.refreshConfiguration(savePanel: NativeSheetReplacement(client: client))
         if direct {
             let layouts = TISCreateInputSourceList([kTISPropertyInputSourceID: "com.apple.keylayout.ABC"] as CFDictionary, true).takeRetainedValue() as! [TISInputSource]
             guard let abc = layouts.first else {

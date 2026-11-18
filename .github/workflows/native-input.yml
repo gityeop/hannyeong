@@ -1,0 +1,16 @@
+name: Native input
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native-input:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+      - run: Tests/NativeSession/NativeInputEngineQA/run.sh

@@ -3,12 +3,21 @@ import InputMethodKit
 
 /// Replace a known filename suffix in one IMK call, without selecting it key by key.
 @MainActor
-enum NativeSheetReplacement {
+struct NativeSheetReplacement {
+    private weak var client: (any IMKTextInput)?
+
+    init?(client: any IMKTextInput) {
+        guard client.bundleIdentifier() == "com.apple.appkit.xpc.openAndSavePanelService" else { return nil }
+        self.client = client
+    }
     struct Failure: LocalizedError {
         let errorDescription: String?
     }
 
-    static func replace(client: any IMKTextInput, expected: String, with replacement: String) throws {
+    static var unavailable: Failure { Failure(errorDescription: "The active save-field input client is unavailable.") }
+
+    func replace(expected: String, with replacement: String) throws {
+        guard let client else { throw Self.unavailable }
         let selection = client.selectedRange()
         let length = expected.utf16.count
         guard selection.location != NSNotFound, selection.length == 0, selection.location >= length else {

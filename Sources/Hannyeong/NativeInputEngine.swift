@@ -14,7 +14,7 @@ final class NativeInputEngine: NSObject {
     private var failed = false
     private var waitingForKeyboardAccess = false
     private var prepared = false
-    private weak var inputClient: (any IMKTextInput)?
+    private var savePanel: NativeSheetReplacement?
     private weak var nativeOutput: NativeNotionOutput?
     var experimentalEnabled: Bool { UserDefaults.standard.bool(forKey: CompositionPreviewSettings.liveEnabledKey) }
 
@@ -25,12 +25,9 @@ final class NativeInputEngine: NSObject {
             engine = try TypingEngine.native(client: LocalModelService.client(), frequencies: LocalModelService.wordFrequencies(),
                 correctionsURL: CorrectionStore.shared.url, memory: CorrectionStore.shared.load(),
                 replaceNativeSheet: { [weak self] expected, replacement in
-                    guard let self, let client = self.inputClient,
-                          client.bundleIdentifier() == "com.apple.appkit.xpc.openAndSavePanelService" else {
-                        throw NativeSheetReplacement.Failure(errorDescription: "The active save-field input client is unavailable.")
-                    }
+                    guard let self, let savePanel = self.savePanel else { throw NativeSheetReplacement.unavailable }
                     let began = DispatchTime.now().uptimeNanoseconds
-                    try NativeSheetReplacement.replace(client: client, expected: expected, with: replacement)
+                    try savePanel.replace(expected: expected, with: replacement)
                     let elapsed = (DispatchTime.now().uptimeNanoseconds - began) / 1_000_000
                     self.logger.notice("Native sheet language reversal; removedUTF16=\(expected.utf16.count) insertedUTF16=\(replacement.utf16.count) ms=\(elapsed)")
                 }, replaceNativeText: { [weak self] deletedUTF16, text in
@@ -52,8 +49,8 @@ final class NativeInputEngine: NSObject {
         } catch { report(error) }
     }
 
-    func activate(client: any IMKTextInput) {
-        inputClient = client
+    func refreshConfiguration(savePanel: NativeSheetReplacement?) {
+        self.savePanel = savePanel
         configure()
         synchronizeSource()
     }
