@@ -202,6 +202,20 @@ private final class Harness {
         let original = text
         defer { if text != original { mutations.append(text) } }
         let code = event.getIntegerValueField(.keyboardEventKeycode)
+        if let editor {
+            if code == 0 && event.flags.contains(.maskCommand) {
+                editor.selectAll(nil)
+            } else if code == 123 && event.flags.contains(.maskShift) {
+                editor.moveLeftAndModifySelection(nil)
+            } else if code == 51 {
+                if event.flags.contains(.maskCommand) { editor.deleteToBeginningOfLine(nil) }
+                else if event.flags.contains(.maskAlternate) { editor.deleteWordBackward(nil) }
+                else { editor.deleteBackward(nil) }
+            } else if !event.flags.contains(.maskCommand) {
+                editor.insertText(physicalText ?? KeyboardOutput.text(event), replacementRange: NSRange(location: NSNotFound, length: 0))
+            }
+            return
+        }
         if event.flags.contains(.maskCommand) { return }
         if code == 123, event.flags.contains(.maskShift) {
             inlineCompletionVisible = false
@@ -229,7 +243,7 @@ private final class Harness {
         else if code == 49 { text += " " }
         else { text += physicalText ?? KeyboardOutput.text(event) }
     }
-    func key(_ text: String, code: CGKeyCode? = nil, flags: CGEventFlags = [], targetPID: pid_t? = nil) {
+    func key(_ text: String, code: CGKeyCode? = nil, flags: CGEventFlags = [], targetPID: pid_t? = nil, forwardedToIMK: Bool = true) {
         let letterKeys: [Character: CGKeyCode] = ["a":0,"s":1,"d":2,"f":3,"h":4,"g":5,"z":6,"x":7,"c":8,"v":9,"b":11,"q":12,"w":13,"e":14,"r":15,"y":16,"t":17,"1":18,"2":19,"3":20,"4":21,"6":22,"5":23,"9":25,"7":26,"8":28,"0":29,"o":31,"u":32,"i":34,"p":35,"l":37,"j":38,"k":40,"n":45,"m":46,".":47," ":49]
         let physicalCode = code ?? letterKeys[text.lowercased().first!]!
         for down in [true, false] {
@@ -247,9 +261,11 @@ private final class Harness {
             let began = CFAbsoluteTimeGetCurrent()
             input.observeCommand(event.type, event)
             inEventTap = true
-            var delivered = input.receive(proxy, event.type, event) != nil
+            let wasMarked = editor?.hasMarkedText() == true
+            let reachedHost = input.receive(proxy, event.type, event) != nil
+            var delivered = reachedHost
             inEventTap = false
-            if delivered, down, nativeMode, targetPID == nil,
+            if delivered, down, nativeMode, forwardedToIMK, targetPID == nil,
                focusChecks.hostBundleID == "notion.id" || TypingEngine.clientOwner(for: focusChecks.hostBundleID) != nil {
                 delivered = !input.receiveNative(event)
             }
@@ -257,9 +273,10 @@ private final class Harness {
             if delivered {
                 if down { deliveredPhysical.append(text) }
                 host(event, physicalText: text)
-            } else if down, nativeMode, physicalCode == 51,
-                      ["notion.id", "com.openai.codex"].contains(focusChecks.hostBundleID) {
-                // Both Chromium hosts delete even when IMK consumes Backspace.
+            } else if reachedHost, down, nativeMode, physicalCode == 51,
+                      ["notion.id", "com.openai.codex"].contains(focusChecks.hostBundleID),
+                      !wasMarked, editor?.hasMarkedText() != true {
+                // Chromium dispatches the raw Backspace when no composition handled the key.
                 host(event, physicalText: text)
             }
         }
@@ -1574,7 +1591,10 @@ struct DirectInputQA {
 
     @MainActor static func nativeBackspaceChecks() async throws {
         for bundleID in ["com.kakao.KakaoTalkMac", "com.openai.codex", "notion.id"] {
-            let h = Harness(nativeMode: true)
+            let editor = bundleID == "com.openai.codex" ? CachedSelectionTextView(frame: .zero) : nil
+            editor?.clampsReplacementAtEnd = true
+            editor?.commitsOnlyMarkedText = true
+            let h = Harness(nativeMode: true, editor: editor)
             h.focusChecks.hostBundleID = bundleID
             h.input.enableForQA()
             if let owner = TypingEngine.clientOwner(for: bundleID) {
@@ -1671,6 +1691,68 @@ struct DirectInputQA {
             }
         }
         print("PASS OpenAI host Command-Delete leaves the next word in Korean for either Command key and release order")
+        try await openAIRapidDeleteChecks()
+    }
+
+    @MainActor private static func openAIRapidDeleteChecks() async throws {
+        let cases: [(name: String, prefix: String, deleteFlags: CGEventFlags, count: Int, selectAll: Bool)] = [
+            ("select all, then Backspace", "", [], 1, true),
+            ("seven Backspaces", "", [], 7, false),
+            ("Option-Backspace", "가나 ", .maskAlternate, 1, false),
+            ("Command-Backspace", "📌 앞줄\n", .maskCommand, 1, false)
+        ]
+        var failures: [String] = []
+        for test in cases {
+            for forwarded in [true, false] {
+                let label = "\(test.name), \(forwarded ? "forwarded to IMK" : "host only")"
+                let editor = CachedSelectionTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 160))
+                editor.clampsReplacementAtEnd = true
+                editor.commitsOnlyMarkedText = true
+                let h = Harness(nativeMode: true, editor: editor)
+                h.text = test.prefix
+                h.focusChecks.hostBundleID = "com.openai.codex"
+                h.input.enableForQA()
+                h.input.clientOwnedPID = h.pid
+                h.input.setNativeClientOwner(.openAI)
+                h.type("dkssud")
+                try require(h.text == test.prefix + "안녕", "\(label) failed to compose its initial word")
+                if test.selectAll {
+                    h.key("a", flags: .maskCommand)
+                    try require(editor.selectedRange() == NSRange(location: 0, length: 2), "\(label) did not select 안녕")
+                }
+                let beforeDelete = editor.selectedRange()
+                for _ in 0..<test.count {
+                    h.key("", code: 51, flags: test.deleteFlags, forwardedToIMK: forwarded)
+                }
+                try require(h.text == test.prefix, "\(label) left \(h.text.debugDescription) before retyping")
+
+                // IMK may still report the old caret after the host's delete or after the first new letter.
+                editor.reportedSelection = test.deleteFlags.isEmpty ? editor.selectedRange() : beforeDelete
+                h.key("r")
+                if !test.deleteFlags.isEmpty { editor.reportedSelection = nil }
+                h.key("k")
+                editor.reportedSelection = nil
+                h.type("sk dkssud")
+                let expected = test.prefix + "가나 안녕"
+                let caret = editor.selectedRange()
+                if h.text != expected || caret != NSRange(location: expected.utf16.count, length: 0) || !h.input.enabled || !h.errors.isEmpty {
+                    failures.append("\(label): expected \(expected.debugDescription), got \(h.text.debugDescription), selection=\(caret), enabled=\(h.input.enabled), errors=\(h.errors.map(\.localizedDescription))")
+                }
+                if h.text == expected {
+                    h.key("", code: 51)
+                    await withCheckedContinuation { ready in DispatchQueue.main.async { ready.resume() } }
+                    let afterBackspace = h.text
+                    h.key("d")
+                    if afterBackspace != test.prefix + "가나 안녀" || h.text != expected {
+                        failures.append("\(label): Backspace then d gave \(afterBackspace.debugDescription) then \(h.text.debugDescription)")
+                    }
+                }
+                h.input.reset()
+                try await h.resolve("d")
+            }
+        }
+        try require(failures.isEmpty, failures.joined(separator: "\n"))
+        print("PASS OpenAI rapid delete and retype leaves 가나 안녕 at the caret after selection, repeated Backspace, word and line deletion")
     }
 
     @MainActor static func clientOwnedDeliveryChecks() async throws {
