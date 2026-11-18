@@ -593,6 +593,7 @@ struct DirectInputQA {
     @MainActor static func run() async throws {
         try await routeChecksDuringTyping()
         try await nativeBackspaceChecks()
+        try await clientCommandDeleteChecks()
         try await clientOwnedDeliveryChecks()
         try await eventTapRecoveryChecks()
         try await notionNativeDeliveryChecks()
@@ -1584,6 +1585,42 @@ struct DirectInputQA {
                         "\(bundleID) used the wrong caret anchor after a host Backspace")
         }
         print("PASS Kakao/OpenAI/Notion IMK Backspace: one trailing unit per press with hosts that ignore empty commits, typing continues at the end")
+    }
+
+    @MainActor static func clientCommandDeleteChecks() async throws {
+        for command: Int64 in [55, 54] {
+            for commandReleasedFirst in [false, true] {
+                let h = Harness(nativeMode: true)
+                h.focusChecks.hostBundleID = "com.openai.codex"
+                h.input.enableForQA()
+                h.input.clientOwnedPID = h.pid
+                h.input.setNativeClientOwner(.openAI)
+                h.type("dkssud")
+                try require(h.text == "안녕", "OpenAI Command-Delete fixture did not start in Korean")
+                h.modifier(code: command, down: true, time: 1_000_000_000)
+                func deleteKey(down: Bool, flags: CGEventFlags) throws {
+                    let event = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: down)!
+                    event.flags = flags
+                    event.setIntegerValueField(.eventSourceUnixProcessID, value: 0)
+                    event.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(h.pid))
+                    event.keyboardSetUnicodeString(stringLength: 0, unicodeString: nil)
+                    h.input.observeCommand(event.type, event)
+                    try require(h.input.receive(h.proxy, event.type, event) != nil, "OpenAI Command-Delete was consumed")
+                }
+                // The host deletes the line without forwarding this shortcut to IMK.
+                try deleteKey(down: true, flags: .maskCommand)
+                h.text = ""
+                if !commandReleasedFirst { try deleteKey(down: false, flags: .maskCommand) }
+                h.modifier(code: command, down: false, time: 1_100_000_000)
+                if commandReleasedFirst { try deleteKey(down: false, flags: []) }
+                h.type("dkssud")
+                try require(h.text == "안녕" && h.input.enabled && h.errors.isEmpty,
+                            "OpenAI Command-Delete (command=\(command), command released first=\(commandReleasedFirst)) produced \(h.text.debugDescription), errors=\(h.errors)")
+                h.input.reset()
+                try await h.resolve("d")
+            }
+        }
+        print("PASS OpenAI host Command-Delete leaves the next word in Korean for either Command key and release order")
     }
 
     @MainActor static func clientOwnedDeliveryChecks() async throws {
