@@ -316,7 +316,13 @@ final class DirectInputTap {
         }
         let marker = event.getIntegerValueField(.eventSourceUserData)
         guard marker != KeyboardOutput.outputMarker, marker != KeyboardOutput.wakeMarker else { return }
-        if type == .keyDown, yieldsKeyToInputClient(event) { return }
+        if type == .keyDown, yieldsKeyToInputClient(event) {
+            // ChatGPT can delete the line without forwarding Command-Delete to IMK.
+            if isOpenAICommandDelete(event), targetsForegroundInputClient(event) {
+                reset(afterHostDeletion: true)
+            }
+            return
+        }
         if type == .keyDown, !observedFirstCommand {
             observedFirstCommand = true
             latencyLogger.notice("Keyboard observer received first key after resume; sourcePID=\(event.getIntegerValueField(.eventSourceUnixProcessID))")
@@ -395,8 +401,16 @@ final class DirectInputTap {
     private var usesNativeText: Bool { nativeClientRoute || (!managesInputSource && textRoute?.hostBundleID == "notion.id") }
     private var hostDeletesOnBackspace: Bool { nativeClientOwner == .openAI || (usesNativeText && !nativeClientRoute) }
 
+    private func isOpenAICommandDelete(_ event: CGEvent) -> Bool {
+        nativeClientOwner == .openAI && event.getIntegerValueField(.keyboardEventKeycode) == kVK_Delete &&
+            event.flags.intersection([.maskCommand, .maskShift, .maskControl, .maskAlternate]) == .maskCommand
+    }
+
     private func yieldsKeyToInputClient(_ event: CGEvent) -> Bool {
-        if nativeClientRoute { return true }
+        nativeClientRoute || targetsForegroundInputClient(event)
+    }
+
+    private func targetsForegroundInputClient(_ event: CGEvent) -> Bool {
         guard let clientOwnedPID else { return false }
         let target = event.getIntegerValueField(.eventTargetUnixProcessID)
         return target <= 0 || target == Int64(clientOwnedPID)
@@ -453,6 +467,9 @@ final class DirectInputTap {
         }
         if type == .keyUp, consumed.remove(code) != nil { return nil }
         guard enabled else { return Unmanaged.passUnretained(event) }
+        if type == .keyUp, isOpenAICommandDelete(event), !targetsForegroundInputClient(event) {
+            return Unmanaged.passUnretained(event)
+        }
         if !nativeClient, usesNativeText, type == .keyDown,
            textRoute!.acceptsKeyboardTarget(event.getIntegerValueField(.eventTargetUnixProcessID)) {
             return Unmanaged.passUnretained(event)

@@ -1588,7 +1588,31 @@ struct DirectInputQA {
     }
 
     @MainActor static func clientCommandDeleteChecks() async throws {
-        for command: Int64 in [55, 54] {
+        func deleteKey(_ h: Harness, down: Bool, flags: CGEventFlags, target: pid_t) throws {
+            let event = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: down)!
+            event.flags = flags
+            event.setIntegerValueField(.eventSourceUnixProcessID, value: 0)
+            event.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(target))
+            event.keyboardSetUnicodeString(stringLength: 0, unicodeString: nil)
+            h.input.observeCommand(event.type, event)
+            try require(h.input.receive(h.proxy, event.type, event) != nil, "Command-Delete was consumed")
+        }
+        for releasedFlags: CGEventFlags in [[], .maskCommand] {
+            let h = Harness(nativeMode: true)
+            h.focusChecks.hostBundleID = "com.openai.codex"
+            h.input.enableForQA()
+            h.input.clientOwnedPID = h.pid
+            h.input.setNativeClientOwner(.openAI)
+            h.key("d")
+            try deleteKey(h, down: true, flags: .maskCommand, target: h.pid + 1)
+            try deleteKey(h, down: false, flags: releasedFlags, target: h.pid + 1)
+            h.key("k")
+            try require(h.text == "아", "Another app's Command-Delete interrupted Korean composition: \(h.text)")
+            h.input.reset()
+            try await h.resolve("d")
+        }
+
+        for (command, targeted): (Int64, Bool) in [(55, true), (54, true), (54, false)] {
             for commandReleasedFirst in [false, true] {
                 let h = Harness(nativeMode: true)
                 h.focusChecks.hostBundleID = "com.openai.codex"
@@ -1598,21 +1622,13 @@ struct DirectInputQA {
                 h.type("dkssud")
                 try require(h.text == "안녕", "OpenAI Command-Delete fixture did not start in Korean")
                 h.modifier(code: command, down: true, time: 1_000_000_000)
-                func deleteKey(down: Bool, flags: CGEventFlags) throws {
-                    let event = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: down)!
-                    event.flags = flags
-                    event.setIntegerValueField(.eventSourceUnixProcessID, value: 0)
-                    event.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(h.pid))
-                    event.keyboardSetUnicodeString(stringLength: 0, unicodeString: nil)
-                    h.input.observeCommand(event.type, event)
-                    try require(h.input.receive(h.proxy, event.type, event) != nil, "OpenAI Command-Delete was consumed")
-                }
+                let target: pid_t = targeted ? h.pid : 0
                 // The host deletes the line without forwarding this shortcut to IMK.
-                try deleteKey(down: true, flags: .maskCommand)
+                try deleteKey(h, down: true, flags: .maskCommand, target: target)
                 h.text = ""
-                if !commandReleasedFirst { try deleteKey(down: false, flags: .maskCommand) }
+                if !commandReleasedFirst { try deleteKey(h, down: false, flags: .maskCommand, target: target) }
                 h.modifier(code: command, down: false, time: 1_100_000_000)
-                if commandReleasedFirst { try deleteKey(down: false, flags: []) }
+                if commandReleasedFirst { try deleteKey(h, down: false, flags: [], target: target) }
                 h.type("dkssud")
                 try require(h.text == "안녕" && h.input.enabled && h.errors.isEmpty,
                             "OpenAI Command-Delete (command=\(command), command released first=\(commandReleasedFirst)) produced \(h.text.debugDescription), errors=\(h.errors)")
