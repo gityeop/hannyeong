@@ -151,8 +151,8 @@ private final class Harness {
         try require(previous.length >= count, "Notion replacement exceeded the UTF16 suffix")
         text = previous.substring(to: previous.length - count) + replacement
         nativeReplacements += 1
-    } : nil, resetNativeText: { [self] afterHostDeletion in
-        if afterHostDeletion { nativeHostDeletionResets += 1 }
+    } : nil, resetNativeText: { [self] reason in
+        if reason == .hostBackspace { nativeHostDeletionResets += 1 }
     },
     refreshRoute: { [self] reason in
         routeRefreshes += 1

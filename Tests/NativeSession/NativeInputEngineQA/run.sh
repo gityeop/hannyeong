@@ -8,7 +8,7 @@ xcrun swiftc -emit-library -emit-module -module-name HannyeongCore \
     "$qa_root/CoreStub.swift" -o "$qa_build/libHannyeongCore.dylib" \
     -emit-module-path "$qa_build/HannyeongCore.swiftmodule"
 xcrun swiftc -emit-library -emit-module -module-name HannyeongInputRuntime \
-    "$qa_root/RuntimeStub.swift" -o "$qa_build/libHannyeongInputRuntime.dylib" \
+    "$source_root/Sources/HannyeongInputRuntime/NativeCaretReset.swift" "$qa_root/RuntimeStub.swift" -o "$qa_build/libHannyeongInputRuntime.dylib" \
     -emit-module-path "$qa_build/HannyeongInputRuntime.swiftmodule"
 xcrun clang -fobjc-arc -c -I "$source_root/Tests/NativeSession" \
     "$source_root/Tests/NativeSession/NativeTextView.m" -o "$qa_build/NativeTextView.o"

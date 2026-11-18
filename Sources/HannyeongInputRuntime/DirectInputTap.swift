@@ -27,7 +27,7 @@ final class DirectInputTap {
     private let managesInputSource: Bool
     private let replaceNativeSheet: ((String, String) throws -> Void)?
     private let replaceNativeText: ((Int, String) throws -> Void)?
-    private let resetNativeText: (Bool) -> Void
+    private let resetNativeText: (NativeCaretReset) -> Void
     private let advanceNativeText: (Int) -> Void
     private let latencyLogger: Logger
     private var lastRoutingState: String?
@@ -94,7 +94,7 @@ final class DirectInputTap {
          sourceID: String = DirectInputSource.direct, managesInputSource: Bool = true,
          replaceNativeSheet: ((String, String) throws -> Void)? = nil,
          replaceNativeText: ((Int, String) throws -> Void)? = nil,
-         resetNativeText: @escaping (Bool) -> Void = { _ in },
+         resetNativeText: @escaping (NativeCaretReset) -> Void = { _ in },
          advanceNativeText: @escaping (Int) -> Void = { _ in },
          invalidateRoute: @escaping () -> Void = {},
          refreshRoute: @escaping (InputRouteMonitor.RefreshReason) -> Void = { _ in }) throws {
@@ -245,7 +245,7 @@ final class DirectInputTap {
     }
 
     /// Focus/navigation invalidates old corrections. Host commands are never retained.
-    func reset(afterHostDeletion: Bool = false) {
+    func reset(afterHostKey event: CGEvent? = nil) {
         cancelRightCommand()
         closeFeedback()
         generation += 1
@@ -256,7 +256,12 @@ final class DirectInputTap {
         basicDecision = nil
         nativeRepair = nil
         session.reset()
-        resetNativeText(afterHostDeletion)
+        if let event, hostDeletesOnBackspace, event.getIntegerValueField(.keyboardEventKeycode) == kVK_Delete,
+           !isOpenAICommandDelete(event) {
+            resetNativeText(.hostBackspace)
+        } else {
+            resetNativeText(.newContext)
+        }
         focus = nil
         routingEvent = nil
         passthroughWord = false
@@ -319,7 +324,7 @@ final class DirectInputTap {
         if type == .keyDown, yieldsKeyToInputClient(event) {
             // ChatGPT can delete the line without forwarding Command-Delete to IMK.
             if isOpenAICommandDelete(event), targetsForegroundInputClient(event) {
-                reset()
+                reset(afterHostKey: event)
             }
             return
         }
@@ -499,7 +504,7 @@ final class DirectInputTap {
         if !nativeClientRoute, routeChecking, textRoute != nil, !passthroughWord {
             if type == .keyDown {
                 if !modifiers.isEmpty || [36, 76, 48, 51, 53, 117, 115, 119, 116, 121, 123, 124, 125, 126].contains(code) {
-                    reset(afterHostDeletion: code == 51 && usesNativeText)
+                    reset(afterHostKey: event)
                 } else {
                     do {
                         let text = try keyboard.text(event)
@@ -635,7 +640,7 @@ final class DirectInputTap {
                "ㄳㄵㄶㄺㄻㄼㄽㄾㄿㅀㅄ".contains(previous) {
                 // Notion deletes a standalone compound jamo in one host edit.
                 // Discard both composing keys so the first cannot be inserted again.
-                reset(afterHostDeletion: true)
+                reset(afterHostKey: event)
                 return false
             }
             let edit = try session.backspace()
@@ -665,7 +670,7 @@ final class DirectInputTap {
             return true
         }
         if code == 51 {
-            reset(afterHostDeletion: hostDeletesOnBackspace)
+            reset(afterHostKey: event)
             return false
         }
         if code == 53 {

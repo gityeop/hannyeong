@@ -14,11 +14,11 @@ public struct DirectFailure: Error {
     public private(set) var resetCount = 0
     private var owner: ClientOwner?
     private let replaceText: (Int, String) throws -> Void
-    private let resetText: (Bool) -> Void
+    private let resetText: (NativeCaretReset) -> Void
     private let failure: (Error) -> Void
 
     private init(replaceText: @escaping (Int, String) throws -> Void,
-                 resetText: @escaping (Bool) -> Void,
+                 resetText: @escaping (NativeCaretReset) -> Void,
                  failure: @escaping (Error) -> Void) {
         self.replaceText = replaceText
         self.resetText = resetText
@@ -28,7 +28,7 @@ public struct DirectFailure: Error {
     public static func native(client: Int, frequencies: Int, correctionsURL: URL, memory: Int,
                               replaceNativeSheet: @escaping (String, String) throws -> Void,
                               replaceNativeText: @escaping (Int, String) throws -> Void,
-                              resetNativeText: @escaping (Bool) -> Void,
+                              resetNativeText: @escaping (NativeCaretReset) -> Void,
                               advanceNativeText: @escaping (Int) -> Void,
                               failure: @escaping (Error) -> Void) throws -> TypingEngine {
         let engine = TypingEngine(replaceText: replaceNativeText, resetText: resetNativeText,
@@ -46,7 +46,7 @@ public struct DirectFailure: Error {
     public func dismissCandidates() {}
     public func reset() {
         resetCount += 1
-        resetText(false)
+        resetText(.newContext)
     }
     public func setNativeClientOwner(_ next: ClientOwner?) {
         if owner != next { reset() }

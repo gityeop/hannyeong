@@ -35,8 +35,8 @@ final class NativeInputEngine: NSObject {
                         throw NativeNotionOutput.Failure(errorDescription: "The active native input controller is unavailable.")
                     }
                     try output.replace(deletingUTF16: deletedUTF16, with: text)
-                }, resetNativeText: { [weak self] afterHostDeletion in
-                    self?.nativeOutput?.reset(afterHostDeletion: afterHostDeletion)
+                }, resetNativeText: { [weak self] reason in
+                    self?.nativeOutput?.reset(reason)
                 },
                 advanceNativeText: { [weak self] in self?.nativeOutput?.advance(utf16: $0) }) { [weak self] in self?.report($0) }
             DistributedNotificationCenter.default().addObserver(self, selector: #selector(sourceChanged),
