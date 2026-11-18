@@ -1625,6 +1625,7 @@ struct DirectInputQA {
                 let target: pid_t = targeted ? h.pid : 0
                 // The host deletes the line without forwarding this shortcut to IMK.
                 try deleteKey(h, down: true, flags: .maskCommand, target: target)
+                try require(h.nativeHostDeletionResets == 0, "Command-Delete deferred the new word's caret like a plain Backspace")
                 h.text = ""
                 if !commandReleasedFirst { try deleteKey(h, down: false, flags: .maskCommand, target: target) }
                 h.modifier(code: command, down: false, time: 1_100_000_000)

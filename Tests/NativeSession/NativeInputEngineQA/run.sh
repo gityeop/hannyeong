@@ -27,3 +27,12 @@ xcrun swiftc -parse-as-library -swift-version 5 \
     -framework AppKit -framework InputMethodKit -framework Carbon \
     -o "$qa_build/CoordinatorQA"
 "$qa_build/CoordinatorQA"
+xcrun swiftc -parse-as-library -swift-version 5 \
+    -I "$qa_build" -L "$qa_build" -lHannyeongInputRuntime \
+    -Xlinker -rpath -Xlinker "$qa_build" \
+    -import-objc-header "$source_root/Tests/NativeSession/NativeTextView.h" \
+    "$source_root/Sources/Hannyeong/NativeNotionOutput.swift" \
+    "$source_root/Tests/NativeSession/NativeNotionOutputQA.swift" "$qa_build/NativeTextView.o" \
+    -framework AppKit -framework InputMethodKit -framework Carbon \
+    -o "$qa_build/NativeNotionOutputQA"
+"$qa_build/NativeNotionOutputQA"

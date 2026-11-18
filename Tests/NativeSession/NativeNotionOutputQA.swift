@@ -106,6 +106,32 @@ private final class NotionView: NativeTextView {
             fputs("Return and two Backspaces: expected ㄳ, got \(retyped.string).\n", stderr)
             exit(1)
         }
+        try openAICommandDeleteChecks()
         print("PASS Notion native output, including ㄳ → Return → Backspace ×2 → ㄳ after a stale selection")
+    }
+
+    @MainActor private static func openAICommandDeleteChecks() throws {
+        for prefix in ["", "📌 앞줄\n"] {
+            let view = NotionView(frame: .zero)
+            view.clampsReplacementAtEnd = true
+            view.string = prefix
+            view.setSelectedRange(NSRange(location: prefix.utf16.count, length: 0))
+            let output = NativeNotionOutput(client: view, clientOwner: .openAI)
+            try output.replace(deletingUTF16: 0, with: "안녕 ")
+            output.reset(afterHostDeletion: true)
+            view.deleteBackward(nil)
+            output.reset()
+            view.setSelectedRange(NSRange(location: prefix.utf16.count, length: "안녕".utf16.count))
+            view.deleteBackward(nil)
+            precondition(view.string == prefix)
+            view.reportedSelection = NSRange(location: prefix.utf16.count, length: 0)
+            // ChatGPT reports the position from before ㄱ when the next key arrives immediately.
+            try output.replace(deletingUTF16: 0, with: "ㄱ")
+            try output.replace(deletingUTF16: 1, with: "가")
+            try output.replace(deletingUTF16: 1, with: "간")
+            try output.replace(deletingUTF16: 1, with: "가나")
+            precondition(view.string == prefix + "가나", "OpenAI rapid retyping changed the preceding line: \(view.string)")
+        }
+        print("PASS OpenAI Command-Delete and immediate r k s k with stale selection in empty and multiline fields")
     }
 }
