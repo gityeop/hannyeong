@@ -6,7 +6,7 @@ public struct DirectFailure: Error {
 }
 
 @MainActor public final class TypingEngine {
-    public enum ClientOwner { case kakaoTalk, openAI }
+    public enum ClientOwner { case kakaoTalk }
     public static var currentSourceID: String { "com.yeop.inputmethod.Hannyeong" }
     public static var hasKeyboardAccess: Bool { true }
     public static var latest: TypingEngine!

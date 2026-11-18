@@ -7,9 +7,9 @@ import HannyeongCore
 public final class TypingEngine {
     public enum ClientOwner: String {
         case kakaoTalk = "com.kakao.KakaoTalkMac"
-        case openAI = "com.openai.codex"
     }
 
+    public nonisolated static let openAIKeyboardBundleID = "com.openai.codex"
     public static let directSourceID = "com.yeop.inputmethod.HannyeongDirectSource"
     public static var currentSourceID: String { DirectInputSource.current() }
     public nonisolated static var hasKeyboardAccess: Bool { AXIsProcessTrusted() && CGPreflightPostEventAccess() }
@@ -74,11 +74,14 @@ public final class TypingEngine {
                 }
             }, sourceID: sourceID, managesInputSource: !native, replaceNativeSheet: replaceNativeSheet,
             replaceNativeText: replaceNativeText, resetNativeText: resetNativeText, advanceNativeText: advanceNativeText,
+            foreignOpenAIKeyboardTarget: { [weak self] pid in self?.routeMonitor?.setForeignKeyboardTarget(pid) },
+            initialOpenAIRoute: { [weak self] pid in try self?.routeMonitor?.initialOpenAIRoute(for: pid) },
             invalidateRoute: { [weak self] in self?.routeMonitor?.invalidate() },
             refreshRoute: { [weak self] reason in self?.routeMonitor?.refresh(reason) })
         routeMonitor = InputRouteMonitor(sourceID: sourceID, checking: { [weak self] in self?.input.beginRouteCheck() },
                                          foregroundChanged: { [weak self] app in
             guard native else { return }
+            self?.input.openAIKeyboardPID = app?.bundleIdentifier == Self.openAIKeyboardBundleID ? app?.processIdentifier : nil
             self?.input.clientOwnedPID = Self.clientOwner(for: app?.bundleIdentifier) != nil ? app?.processIdentifier : nil
         }) { [weak self] target, known, keyboardPIDs in
             self?.input.systemKeyboardPIDs = keyboardPIDs

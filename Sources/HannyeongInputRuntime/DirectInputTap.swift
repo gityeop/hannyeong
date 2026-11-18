@@ -9,8 +9,10 @@ final class DirectInputTap {
     private let decide: (DirectSession.Snapshot) async throws -> DirectSession.Decision
     private let changed: (Bool) -> Void
     private let failure: (Error) -> Void
-    private let captureFocus: () throws -> DirectFocus?
+    private let captureFocus: (pid_t?) throws -> DirectFocus?
     private let validateFocus: (DirectFocus) throws -> Bool
+    private let foreignOpenAIKeyboardTarget: (pid_t?) -> Void
+    private let initialOpenAIRoute: (pid_t) throws -> DirectFocus?
     private let invalidateRoute: () -> Void
     private let refreshRoute: (InputRouteMonitor.RefreshReason) -> Void
     private let post: (CGEvent, CGEventTapProxy) -> Void
@@ -39,6 +41,8 @@ final class DirectInputTap {
     private var commandTap: CFMachPort?
     private var commandSource: CFRunLoopSource?
     private var textRoute: DirectFocus?
+    private var openAIKeyboardIsElsewhere = false
+    private var unclassifiedForeignWordPID: Int64?
     private var nativeClientOwner: TypingEngine.ClientOwner?
     private var nativeClientRoute: Bool { nativeClientOwner != nil }
     private var routeKnown = false
@@ -72,6 +76,7 @@ final class DirectInputTap {
     private let preferencesQueue = DispatchQueue(label: "com.yeop.HannyeongDirectPrototype.Preferences", qos: .utility)
     private(set) var enabled = false
     var systemKeyboardPIDs: Set<Int64> = []
+    var openAIKeyboardPID: pid_t?
     var clientOwnedPID: pid_t? {
         didSet {
             if oldValue != nil, clientOwnedPID != oldValue { setNativeClientOwner(nil) }
@@ -80,7 +85,7 @@ final class DirectInputTap {
 
     init(decide: @escaping (DirectSession.Snapshot) async throws -> DirectSession.Decision,
          changed: @escaping (Bool) -> Void, failure: @escaping (Error) -> Void,
-         captureFocus: @escaping () throws -> DirectFocus? = DirectFocus.capture,
+         captureFocus: @escaping (pid_t?) throws -> DirectFocus? = DirectFocus.capture(for:),
          validateFocus: ((DirectFocus) throws -> Bool)? = nil,
          post: @escaping (CGEvent, CGEventTapProxy) -> Void = { $0.tapPostEvent($1) },
          wake: @escaping () throws -> Void = { try KeyboardOutput.wake().post(tap: KeyboardOutput.tapLocation) },
@@ -96,6 +101,8 @@ final class DirectInputTap {
          replaceNativeText: ((Int, String) throws -> Void)? = nil,
          resetNativeText: @escaping (NativeCaretReset) -> Void = { _ in },
          advanceNativeText: @escaping (Int) -> Void = { _ in },
+         foreignOpenAIKeyboardTarget: @escaping (pid_t?) -> Void = { _ in },
+         initialOpenAIRoute: @escaping (pid_t) throws -> DirectFocus? = { _ in nil },
          invalidateRoute: @escaping () -> Void = {},
          refreshRoute: @escaping (InputRouteMonitor.RefreshReason) -> Void = { _ in }) throws {
         keyboard = try KeyboardInput()
@@ -104,6 +111,8 @@ final class DirectInputTap {
         self.failure = failure
         self.captureFocus = captureFocus
         self.validateFocus = validateFocus ?? { try $0.validate() }
+        self.foreignOpenAIKeyboardTarget = foreignOpenAIKeyboardTarget
+        self.initialOpenAIRoute = initialOpenAIRoute
         self.invalidateRoute = invalidateRoute
         self.refreshRoute = refreshRoute
         self.post = post
@@ -256,8 +265,7 @@ final class DirectInputTap {
         basicDecision = nil
         nativeRepair = nil
         session.reset()
-        if let event, hostDeletesOnBackspace, event.getIntegerValueField(.keyboardEventKeycode) == kVK_Delete,
-           !isOpenAICommandDelete(event) {
+        if let event, hostDeletesOnBackspace, event.getIntegerValueField(.keyboardEventKeycode) == kVK_Delete {
             resetNativeText(.hostBackspace)
         } else {
             resetNativeText(.newContext)
@@ -266,6 +274,8 @@ final class DirectInputTap {
         routingEvent = nil
         passthroughWord = false
         passthroughPID = nil
+        openAIKeyboardIsElsewhere = false
+        unclassifiedForeignWordPID = nil
         previewChanged("", "")
     }
 
@@ -297,9 +307,13 @@ final class DirectInputTap {
         else { unchanged = false }
         if !unchanged || !known {
             // Never start replacing the middle of a word whose first keys were passed through.
-            let preservePassedWord = !routeKnown && passthroughWord && target != nil
-            let passedPID = passthroughPID
+            let foreignWord = unclassifiedForeignWordPID.flatMap { pid in
+                target?.acceptsKeyboardTarget(pid) == true ? pid : nil
+            }
+            let preservePassedWord = foreignWord != nil || (!routeKnown && passthroughWord && target != nil)
+            let passedPID = foreignWord ?? passthroughPID
             reset()
+            if target?.usesOpenAIKeyboardRoute == true { session.setInitialLanguage(.korean) }
             passthroughWord = preservePassedWord
             if preservePassedWord { passthroughPID = passedPID }
         }
@@ -321,18 +335,21 @@ final class DirectInputTap {
         }
         let marker = event.getIntegerValueField(.eventSourceUserData)
         guard marker != KeyboardOutput.outputMarker, marker != KeyboardOutput.wakeMarker else { return }
+        if type == .keyDown, let route = textRoute, route.usesOpenAIKeyboardRoute {
+            let target = event.getIntegerValueField(.eventTargetUnixProcessID)
+            if target > 0, !route.acceptsKeyboardTarget(target) { return }
+            let code = event.getIntegerValueField(.keyboardEventKeycode)
+            let modifiers = event.flags.intersection([.maskShift, .maskAlternate, .maskCommand, .maskControl])
+            if code == kVK_Delete || (code == kVK_ANSI_A && modifiers == .maskCommand) { return }
+        }
         if type == .keyDown, yieldsKeyToInputClient(event) {
-            // ChatGPT can delete the line without forwarding Command-Delete to IMK.
-            if isOpenAICommandDelete(event), targetsForegroundInputClient(event) {
-                reset(afterHostKey: event)
-            }
             return
         }
         if type == .keyDown, !observedFirstCommand {
             observedFirstCommand = true
             latencyLogger.notice("Keyboard observer received first key after resume; sourcePID=\(event.getIntegerValueField(.eventSourceUnixProcessID))")
         }
-        guard !KeyboardInput.isSoftwareText(event, systemKeyboardPIDs: systemKeyboardPIDs) else { return }
+        guard !isSoftwareText(event) else { return }
         let code = event.getIntegerValueField(.keyboardEventKeycode)
         if KeyboardInput.isFunctionKey(code) {
             if type == .keyDown {
@@ -386,10 +403,16 @@ final class DirectInputTap {
         // A fresh focus/menu/command/key event may classify a new route. Never retry AX here.
     }
 
+    private func isSoftwareText(_ event: CGEvent) -> Bool {
+        let targetPID = event.getIntegerValueField(.eventTargetUnixProcessID)
+        return KeyboardInput.isSoftwareText(event, systemKeyboardPIDs: systemKeyboardPIDs,
+            distinguishVirtualKeys: openAIKeyboardPID.map { Int64($0) == targetPID } == true)
+    }
+
     private func traceRouting(_ type: CGEventType, _ event: CGEvent) {
         guard enabled, type == .keyDown else { return }
         let state: String
-        if KeyboardInput.isSoftwareText(event, systemKeyboardPIDs: systemKeyboardPIDs) { state = "software-text" }
+        if isSoftwareText(event) { state = "software-text" }
         else if IsSecureEventInputEnabled() { state = "secure-input" }
         else if event.getIntegerValueField(.eventTargetUnixProcessID) > 0,
                 let route = textRoute, !route.acceptsKeyboardTarget(event.getIntegerValueField(.eventTargetUnixProcessID)) { state = "target-mismatch" }
@@ -404,12 +427,7 @@ final class DirectInputTap {
     }
 
     private var usesNativeText: Bool { nativeClientRoute || (!managesInputSource && textRoute?.hostBundleID == "notion.id") }
-    private var hostDeletesOnBackspace: Bool { nativeClientOwner == .openAI || (usesNativeText && !nativeClientRoute) }
-
-    private func isOpenAICommandDelete(_ event: CGEvent) -> Bool {
-        nativeClientOwner == .openAI && event.getIntegerValueField(.keyboardEventKeycode) == kVK_Delete &&
-            event.flags.intersection([.maskCommand, .maskShift, .maskControl, .maskAlternate]) == .maskCommand
-    }
+    private var hostDeletesOnBackspace: Bool { usesNativeText && !nativeClientRoute }
 
     private func yieldsKeyToInputClient(_ event: CGEvent) -> Bool {
         nativeClientRoute || targetsForegroundInputClient(event)
@@ -458,7 +476,7 @@ final class DirectInputTap {
             return Unmanaged.passUnretained(event)
         }
         traceRouting(type, event)
-        if KeyboardInput.isSoftwareText(event, systemKeyboardPIDs: systemKeyboardPIDs) {
+        if isSoftwareText(event) {
             if enabled, type == .keyDown { reset() }
             return Unmanaged.passUnretained(event)
         }
@@ -472,9 +490,6 @@ final class DirectInputTap {
         }
         if type == .keyUp, consumed.remove(code) != nil { return nil }
         guard enabled else { return Unmanaged.passUnretained(event) }
-        if type == .keyUp, isOpenAICommandDelete(event), !targetsForegroundInputClient(event) {
-            return Unmanaged.passUnretained(event)
-        }
         if !nativeClient, usesNativeText, type == .keyDown,
            textRoute!.acceptsKeyboardTarget(event.getIntegerValueField(.eventTargetUnixProcessID)) {
             return Unmanaged.passUnretained(event)
@@ -496,6 +511,58 @@ final class DirectInputTap {
             return Unmanaged.passUnretained(event)
         }
         let targetPID = event.getIntegerValueField(.eventTargetUnixProcessID)
+        if let openAIKeyboardPID, let target = pid_t(exactly: targetPID), target > 0,
+           type == .keyDown || type == .flagsChanged {
+            foreignOpenAIKeyboardTarget(target == openAIKeyboardPID ? nil : target)
+        }
+        if !nativeClient, type == .keyDown, modifiers.isEmpty, !passthroughWord,
+           let openAIKeyboardPID, targetPID == Int64(openAIKeyboardPID),
+           textRoute.map({ $0.pid != openAIKeyboardPID }) ?? (routeChecking || !routeKnown) {
+            do {
+                let text = try keyboard.text(event)
+                if KeyboardInput.isWordKey(text) {
+                    let start = DispatchTime.now().uptimeNanoseconds
+                    let target = try initialOpenAIRoute(openAIKeyboardPID)
+                    updateRoute(target, known: true)
+                    let elapsed = (DispatchTime.now().uptimeNanoseconds - start) / 1_000
+                    latencyLogger.notice("OpenAI first letter focus check; target=\(target != nil) elapsedUs=\(elapsed)")
+                }
+            } catch let error as DirectFocus.RouteError {
+                updateRoute(nil, known: false)
+                routeFailed(error)
+            } catch {
+                stop(error)
+                return Unmanaged.passUnretained(event)
+            }
+        }
+        if let route = textRoute, route.usesOpenAIKeyboardRoute,
+           type == .keyDown || type == .keyUp || (type == .flagsChanged && targetPID > 0) {
+            if !route.acceptsKeyboardTarget(targetPID) {
+                if type == .keyDown {
+                    do {
+                        let text = try keyboard.text(event)
+                        let continuesWord = modifiers.isEmpty && KeyboardInput.isWordKey(text)
+                        unclassifiedForeignWordPID = continuesWord && targetPID > 0 ? targetPID : nil
+                    } catch {
+                        failure(error)
+                        unclassifiedForeignWordPID = nil
+                    }
+                }
+                if type != .keyUp {
+                    openAIKeyboardIsElsewhere = true
+                    cancelRightCommand()
+                    closeFeedback()
+                    generation += 1
+                    ready = nil
+                    lastDecided = nil
+                }
+                return Unmanaged.passUnretained(event)
+            }
+            if type == .keyDown {
+                openAIKeyboardIsElsewhere = false
+                unclassifiedForeignWordPID = nil
+            }
+        }
         if !nativeClientRoute, type == .keyDown, let route = textRoute, !route.acceptsKeyboardTarget(targetPID) {
             // A command panel may own the keyboard while AX still reports a text field behind it.
             updateRoute(nil, known: false)
@@ -508,7 +575,7 @@ final class DirectInputTap {
                 } else {
                     do {
                         let text = try keyboard.text(event)
-                        let letters = !text.isEmpty && text.unicodeScalars.allSatisfy { (65...90).contains($0.value) || (97...122).contains($0.value) }
+                        let letters = KeyboardInput.isWordKey(text)
                         if letters {
                             try rememberRoute(event)
                             session.recordPassedLetters(text)
@@ -538,7 +605,7 @@ final class DirectInputTap {
             if type == .keyDown, modifiers.isEmpty {
                 do {
                     let text = try keyboard.text(event)
-                    let letters = !text.isEmpty && text.unicodeScalars.allSatisfy { (65...90).contains($0.value) || (97...122).contains($0.value) }
+                    let letters = KeyboardInput.isWordKey(text)
                     if !routeKnown, letters { passthroughWord = true; passthroughPID = targetPID }
                     if !letters { passthroughWord = false; passthroughPID = nil }
                 } catch { stop(error) }
@@ -622,8 +689,12 @@ final class DirectInputTap {
     }
 
     private func applyWake(_ proxy: CGEventTapProxy?) {
-        guard enabled, nativeClientRoute || (textRoute != nil && !routeChecking), functionKeysHeld.isEmpty else { return }
-        if nativeClientRoute && IsSecureEventInputEnabled() { reset(); return }
+        guard enabled, !openAIKeyboardIsElsewhere,
+              nativeClientRoute || (textRoute != nil && !routeChecking), functionKeysHeld.isEmpty else { return }
+        if (nativeClientRoute || textRoute?.usesOpenAIKeyboardRoute == true) && IsSecureEventInputEnabled() {
+            reset()
+            return
+        }
         do {
             if singleReady { singleReady = false; try applySingleTap(proxy) }
             try applyFeedbackReady(proxy)
@@ -684,7 +755,7 @@ final class DirectInputTap {
             return false
         }
         let text = try keyboard.text(event)
-        let letters = !text.isEmpty && text.unicodeScalars.allSatisfy { (65...90).contains($0.value) || (97...122).contains($0.value) }
+        let letters = KeyboardInput.isWordKey(text)
         if letters {
             try rememberRoute(event)
             if session.raw.isEmpty, let fixedLanguage { session.setInitialLanguage(fixedLanguage) }
@@ -741,17 +812,19 @@ final class DirectInputTap {
     }
 
     private func requestDecision() {
-        guard enabled, nativeClientRoute || (textRoute != nil && !routeChecking && !passthroughWord), functionKeysHeld.isEmpty,
+        guard enabled, !openAIKeyboardIsElsewhere,
+              nativeClientRoute || (textRoute != nil && !routeChecking && !passthroughWord), functionKeysHeld.isEmpty,
               !rightCommand.isPressed, !rightCommand.hasPending, feedbackTarget == nil,
               session.hasDecision, modelTask == nil, ready == nil, session.snapshot != lastDecided else { return }
         let request = session.snapshot, epoch = generation, clientOwned = nativeClientRoute
         let decide = self.decide, captureFocus = self.captureFocus, validateFocus = self.validateFocus
+        let keyboardPID = textRoute?.keyboardOwnerForFocus ?? textRoute?.pid
         modelTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             let began = DispatchTime.now().uptimeNanoseconds
             do {
                 // AX messaging and candidate/model work must never run inside the key tap.
-                let target = clientOwned ? nil : try captureFocus()
+                let target = clientOwned ? nil : try captureFocus(keyboardPID)
                 if target == nil && !clientOwned {
                     await MainActor.run {
                         self.modelTask = nil
@@ -858,10 +931,11 @@ final class DirectInputTap {
         guard let target = session.feedbackTarget else { requestDecision(); return }
         feedbackTarget = target
         let epoch = generation, captureFocus = self.captureFocus, validateFocus = self.validateFocus, caretBounds = self.caretBounds
+        let keyboardPID = textRoute?.keyboardOwnerForFocus ?? textRoute?.pid
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                guard let focus = try captureFocus() else {
+                guard let focus = try captureFocus(keyboardPID) else {
                     await MainActor.run { if self.generation == epoch { self.beginRouteCheck(); self.refreshRoute(.routeChanged) } }
                     return
                 }
