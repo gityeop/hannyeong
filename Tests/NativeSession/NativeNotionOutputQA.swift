@@ -1,43 +1,10 @@
 import AppKit
 import InputMethodKit
 
-private final class NotionView: NativeTextView {
-    var reportedSelection: NSRange?
-    var hideInitialSelection = false
-    var clampsReplacementAtEnd = false
-    var replacements: [NSRange] = []
-    var markedCalls = 0
-    override func selectedRange() -> NSRange {
-        if hideInitialSelection && replacements.isEmpty { return NSRange(location: NSNotFound, length: 0) }
-        return reportedSelection ?? super.selectedRange()
-    }
-    override func insertText(_ string: Any, replacementRange: NSRange) {
-        replacements.append(replacementRange)
-        var range = replacementRange
-        if clampsReplacementAtEnd {
-            let cached = reportedSelection
-            reportedSelection = nil
-            defer { reportedSelection = cached }
-            if range.location != NSNotFound {
-                let end = self.string.utf16.count
-                range.location = min(range.location, end)
-                range.length = min(range.length, end - range.location)
-            }
-            super.insertText(string, replacementRange: range)
-            return
-        }
-        super.insertText(string, replacementRange: range)
-    }
-    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-        markedCalls += 1
-        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
-    }
-}
-
 @main private struct NativeNotionOutputQA {
     @MainActor static func main() throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
-        let view = NotionView(frame: .zero)
+        let view = CachedSelectionTextView(frame: .zero)
         view.string = "📌 뒤"; view.setSelectedRange(NSRange(location: 3, length: 0))
         let output = NativeNotionOutput(client: view)
         try output.replace(deletingUTF16: 0, with: "x")
@@ -55,14 +22,14 @@ private final class NotionView: NativeTextView {
         precondition(view.string == "📌 타이핑 뒤", "Passed Space was not included in the owned suffix")
         precondition(view.markedCalls == 0 && !view.hasMarkedText(), "A whole-word underline was introduced")
 
-        let empty = NotionView(frame: .zero)
+        let empty = CachedSelectionTextView(frame: .zero)
         empty.hideInitialSelection = true
         let emptyOutput = NativeNotionOutput(client: empty)
         try emptyOutput.replace(deletingUTF16: 0, with: "ㅌ")
         try emptyOutput.replace(deletingUTF16: 1, with: "타")
         precondition(empty.string == "타", "An empty field required a cursor before the first key")
 
-        let erased = NotionView(frame: .zero)
+        let erased = CachedSelectionTextView(frame: .zero)
         let erasedOutput = NativeNotionOutput(client: erased)
         try erasedOutput.replace(deletingUTF16: 0, with: "닿")
         try erasedOutput.replace(deletingUTF16: 0, with: "ㅎ")
@@ -75,7 +42,7 @@ private final class NotionView: NativeTextView {
         view.setSelectedRange(NSRange(location: 3, length: 3))
         try output.replace(deletingUTF16: 0, with: "안녕")
         precondition(view.string == "📌 안녕 뒤", "Field reset reused an old caret or lost the selection")
-        let other = NotionView(frame: .zero)
+        let other = CachedSelectionTextView(frame: .zero)
         let otherOutput = NativeNotionOutput(client: other)
         try otherOutput.replace(deletingUTF16: 0, with: "본문")
         precondition(other.string == "본문" && view.string == "📌 안녕 뒤", "Controller output crossed clients")
@@ -87,15 +54,15 @@ private final class NotionView: NativeTextView {
         } catch is NativeNotionOutput.Failure {}
         precondition(other.replacements.count == count)
 
-        let retyped = NotionView(frame: .zero)
+        let retyped = CachedSelectionTextView(frame: .zero)
         retyped.clampsReplacementAtEnd = true
         let retypedOutput = NativeNotionOutput(client: retyped)
         try retypedOutput.replace(deletingUTF16: 0, with: "ㄳ")
         retypedOutput.reset()
         retyped.insertNewline(nil)
-        retypedOutput.reset(afterHostDeletion: true)
+        retypedOutput.reset(.hostBackspace)
         retyped.deleteBackward(nil)
-        retypedOutput.reset(afterHostDeletion: true)
+        retypedOutput.reset(.hostBackspace)
         retyped.deleteBackward(nil)
         precondition(retyped.string.isEmpty)
         retyped.reportedSelection = NSRange(location: 1, length: 0)
@@ -106,6 +73,32 @@ private final class NotionView: NativeTextView {
             fputs("Return and two Backspaces: expected ㄳ, got \(retyped.string).\n", stderr)
             exit(1)
         }
+        try openAICommandDeleteChecks()
         print("PASS Notion native output, including ㄳ → Return → Backspace ×2 → ㄳ after a stale selection")
+    }
+
+    @MainActor private static func openAICommandDeleteChecks() throws {
+        for prefix in ["", "📌 앞줄\n"] {
+            let view = CachedSelectionTextView(frame: .zero)
+            view.clampsReplacementAtEnd = true
+            view.string = prefix
+            view.setSelectedRange(NSRange(location: prefix.utf16.count, length: 0))
+            let output = NativeNotionOutput(client: view, clientOwner: .openAI)
+            try output.replace(deletingUTF16: 0, with: "안녕 ")
+            output.reset(.hostBackspace)
+            view.deleteBackward(nil)
+            output.reset()
+            view.setSelectedRange(NSRange(location: prefix.utf16.count, length: "안녕".utf16.count))
+            view.deleteBackward(nil)
+            precondition(view.string == prefix)
+            view.reportedSelection = NSRange(location: prefix.utf16.count, length: 0)
+            // ChatGPT reports the position from before ㄱ when the next key arrives immediately.
+            try output.replace(deletingUTF16: 0, with: "ㄱ")
+            try output.replace(deletingUTF16: 1, with: "가")
+            try output.replace(deletingUTF16: 1, with: "간")
+            try output.replace(deletingUTF16: 1, with: "가나")
+            precondition(view.string == prefix + "가나", "OpenAI rapid retyping changed the preceding line: \(view.string)")
+        }
+        print("PASS OpenAI Command-Delete and immediate r k s k with stale selection in empty and multiline fields")
     }
 }

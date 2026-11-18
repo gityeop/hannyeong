@@ -5,10 +5,18 @@ import HannyeongCore
 /// Shared word/model state with one physical-key owner per host.
 @MainActor
 public final class TypingEngine {
+    public enum ClientOwner: String {
+        case kakaoTalk = "com.kakao.KakaoTalkMac"
+        case openAI = "com.openai.codex"
+    }
+
     public static let directSourceID = "com.yeop.inputmethod.HannyeongDirectSource"
-    public static let clientOwnedBundleID = "com.kakao.KakaoTalkMac"
     public static var currentSourceID: String { DirectInputSource.current() }
     public nonisolated static var hasKeyboardAccess: Bool { AXIsProcessTrusted() && CGPreflightPostEventAccess() }
+
+    public static func clientOwner(for bundleID: String?) -> ClientOwner? {
+        bundleID.flatMap(ClientOwner.init(rawValue:))
+    }
 
     private let runtime: DirectRuntime
     private var input: DirectInputTap!
@@ -27,7 +35,7 @@ public final class TypingEngine {
                               correctionsURL: URL, memory: CorrectionMemory,
                               replaceNativeSheet: ((String, String) throws -> Void)? = nil,
                               replaceNativeText: ((Int, String) throws -> Void)? = nil,
-                              resetNativeText: @escaping (Bool) -> Void = { _ in },
+                              resetNativeText: @escaping (NativeCaretReset) -> Void = { _ in },
                               advanceNativeText: @escaping (Int) -> Void = { _ in },
                               failure: @escaping (Error) -> Void) throws -> TypingEngine {
         try TypingEngine(runtime: DirectRuntime(client: client, frequencies: frequencies, correctionsURL: correctionsURL, memory: memory),
@@ -40,7 +48,7 @@ public final class TypingEngine {
                  changed: @escaping (Bool) -> Void, failure: @escaping (Error) -> Void,
                  replaceNativeSheet: ((String, String) throws -> Void)? = nil,
                  replaceNativeText: ((Int, String) throws -> Void)? = nil,
-                 resetNativeText: @escaping (Bool) -> Void = { _ in },
+                 resetNativeText: @escaping (NativeCaretReset) -> Void = { _ in },
                  advanceNativeText: @escaping (Int) -> Void = { _ in }) throws {
         self.runtime = runtime
         input = try DirectInputTap(decide: { try await runtime.decide($0) }, changed: changed, failure: failure,
@@ -71,7 +79,7 @@ public final class TypingEngine {
         routeMonitor = InputRouteMonitor(sourceID: sourceID, checking: { [weak self] in self?.input.beginRouteCheck() },
                                          foregroundChanged: { [weak self] app in
             guard native else { return }
-            self?.input.clientOwnedPID = app?.bundleIdentifier == Self.clientOwnedBundleID ? app?.processIdentifier : nil
+            self?.input.clientOwnedPID = Self.clientOwner(for: app?.bundleIdentifier) != nil ? app?.processIdentifier : nil
         }) { [weak self] target, known, keyboardPIDs in
             self?.input.systemKeyboardPIDs = keyboardPIDs
             self?.input.updateRoute(target, known: known)
@@ -87,7 +95,7 @@ public final class TypingEngine {
     public func pause() throws { try input.pause() }
     public func close() throws { routeMonitor.stop(); try input.close() }
     public func reset() { input.reset() }
-    public func setNativeClientRoute(_ active: Bool) { input.setNativeClientRoute(active) }
+    public func setNativeClientOwner(_ owner: ClientOwner?) { input.setNativeClientOwner(owner) }
     public func handleNative(_ event: CGEvent) -> Bool { input.receiveNative(event) }
     public func resumeAfterSecureInput() { routeMonitor.resume() }
     public func recheckInputTarget() { routeMonitor.refresh(.inputClientChanged) }

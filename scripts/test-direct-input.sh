@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
 TASK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TASK_QA="$TASK_ROOT/.build/direct-input-qa"
 cd "$TASK_ROOT"
 mkdir -p "$TASK_QA/products"
-xcrun swiftc -parse-as-library -swift-version 5 -O -emit-library -static -emit-module -module-name HannyeongCore \
-    -I Sources/CLibHangul -I .build/dependencies/libhangul/include/hangul-1.0 \
-    -L .build/dependencies/libhangul/lib -lhangul \
-    Sources/HannyeongCore/*.swift \
-    -emit-module-path "$TASK_QA/products/HannyeongCore.swiftmodule" -o "$TASK_QA/products/libHannyeongCore.a"
-TASK_SOURCES=()
-for TASK_SOURCE in Sources/HannyeongInputRuntime/*.swift; do
-    TASK_SOURCES+=("$TASK_SOURCE")
-done
-xcrun swiftc -parse-as-library -swift-version 5 -D DIRECT_INPUT_QA \
-    -I "$TASK_QA/products" -I Sources/CLibHangul -I .build/dependencies/libhangul/include/hangul-1.0 \
-    -L "$TASK_QA/products" -lHannyeongCore -L .build/dependencies/libhangul/lib -lhangul \
-    -framework AppKit -framework Carbon \
-    "${TASK_SOURCES[@]}" Sources/Hannyeong/CorrectionStore.swift Tests/DirectInput/DirectInputQA.swift -o "$TASK_QA/DirectInputQA"
-"$TASK_QA/DirectInputQA" "$HOME/Library/Input Methods/Hannyeong.app/Contents/Resources"
+products="$TASK_QA/products"
+hangul=.build/dependencies/libhangul
+module_flags=(-parse-as-library -swift-version 5 -I Sources/CLibHangul -I "$hangul/include/hangul-1.0" -I "$products" -L "$products" -L "$hangul/lib")
+xcrun swiftc "${module_flags[@]}" -O -emit-library -static -emit-module -module-name HannyeongCore \
+    Sources/HannyeongCore/*.swift -emit-module-path "$products/HannyeongCore.swiftmodule" -o "$products/libHannyeongCore.a"
+xcrun swiftc "${module_flags[@]}" -D DIRECT_INPUT_QA -enable-testing -emit-library -static -emit-module -module-name HannyeongInputRuntime \
+    Sources/HannyeongInputRuntime/*.swift -emit-module-path "$products/HannyeongInputRuntime.swiftmodule" -o "$products/libHannyeongInputRuntime.a"
+xcrun clang -fobjc-arc -Wno-protocol -c Tests/NativeSession/NativeTextView.m -o "$TASK_QA/NativeTextView.o"
+xcrun swiftc "${module_flags[@]}" -import-objc-header Tests/NativeSession/NativeTextView.h \
+    -lHannyeongInputRuntime -lHannyeongCore -lhangul -framework AppKit -framework Carbon -framework InputMethodKit \
+    Sources/Hannyeong/{CorrectionStore,NativeNotionOutput}.swift Tests/NativeSession/CachedSelectionTextView.swift \
+    Tests/DirectInput/DirectInputQA.swift "$TASK_QA/NativeTextView.o" -o "$TASK_QA/DirectInputQA"
+if [[ $# == 0 ]]; then
+    set -- "$HOME/Library/Input Methods/Hannyeong.app/Contents/Resources"
+fi
+"$TASK_QA/DirectInputQA" "$@"

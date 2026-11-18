@@ -5,7 +5,6 @@ import HannyeongInputRuntime
 import HannyeongCore
 import os
 
-/// IMK supplies source identity and owns KakaoTalk and Notion keys.
 @MainActor
 final class NativeInputEngine: NSObject {
     static let shared = NativeInputEngine()
@@ -15,7 +14,7 @@ final class NativeInputEngine: NSObject {
     private var failed = false
     private var waitingForKeyboardAccess = false
     private var prepared = false
-    private weak var inputClient: (any IMKTextInput)?
+    private var savePanel: NativeSheetReplacement?
     private weak var nativeOutput: NativeNotionOutput?
     var experimentalEnabled: Bool { UserDefaults.standard.bool(forKey: CompositionPreviewSettings.liveEnabledKey) }
 
@@ -26,12 +25,9 @@ final class NativeInputEngine: NSObject {
             engine = try TypingEngine.native(client: LocalModelService.client(), frequencies: LocalModelService.wordFrequencies(),
                 correctionsURL: CorrectionStore.shared.url, memory: CorrectionStore.shared.load(),
                 replaceNativeSheet: { [weak self] expected, replacement in
-                    guard let self, let client = self.inputClient,
-                          client.bundleIdentifier() == "com.apple.appkit.xpc.openAndSavePanelService" else {
-                        throw NativeSheetReplacement.Failure(errorDescription: "The active save-field input client is unavailable.")
-                    }
+                    guard let self, let savePanel = self.savePanel else { throw NativeSheetReplacement.unavailable }
                     let began = DispatchTime.now().uptimeNanoseconds
-                    try NativeSheetReplacement.replace(client: client, expected: expected, with: replacement)
+                    try savePanel.replace(expected: expected, with: replacement)
                     let elapsed = (DispatchTime.now().uptimeNanoseconds - began) / 1_000_000
                     self.logger.notice("Native sheet language reversal; removedUTF16=\(expected.utf16.count) insertedUTF16=\(replacement.utf16.count) ms=\(elapsed)")
                 }, replaceNativeText: { [weak self] deletedUTF16, text in
@@ -39,8 +35,8 @@ final class NativeInputEngine: NSObject {
                         throw NativeNotionOutput.Failure(errorDescription: "The active native input controller is unavailable.")
                     }
                     try output.replace(deletingUTF16: deletedUTF16, with: text)
-                }, resetNativeText: { [weak self] afterHostDeletion in
-                    self?.nativeOutput?.reset(afterHostDeletion: afterHostDeletion)
+                }, resetNativeText: { [weak self] reason in
+                    self?.nativeOutput?.reset(reason)
                 },
                 advanceNativeText: { [weak self] in self?.nativeOutput?.advance(utf16: $0) }) { [weak self] in self?.report($0) }
             DistributedNotificationCenter.default().addObserver(self, selector: #selector(sourceChanged),
@@ -53,11 +49,8 @@ final class NativeInputEngine: NSObject {
         } catch { report(error) }
     }
 
-    func activate(client: any IMKTextInput) {
-        if let output = nativeOutput, output.usesClientRoute, !output.belongsTo(client) {
-            deactivateNativeOutput(output)
-        }
-        inputClient = client
+    func refreshConfiguration(savePanel: NativeSheetReplacement?) {
+        self.savePanel = savePanel
         configure()
         synchronizeSource()
     }
@@ -68,16 +61,13 @@ final class NativeInputEngine: NSObject {
             return false
         }
         guard let engine, engine.enabled, let keyboardEvent = event.cgEvent else { return false }
-        if output.usesClientRoute {
-            guard let inputClient, output.belongsTo(inputClient) else { return false }
-        }
         if nativeOutput !== output {
             if let current = nativeOutput { deactivateNativeOutput(current) }
             nativeOutput = output
             if !output.usesClientRoute { engine.reset() }
             logger.notice("Native controller bound for IMK keys; clientOwned=\(output.usesClientRoute) sourcePID=\(keyboardEvent.getIntegerValueField(.eventSourceUnixProcessID)) targetPID=\(keyboardEvent.getIntegerValueField(.eventTargetUnixProcessID))")
         }
-        if output.usesClientRoute { engine.setNativeClientRoute(true) }
+        if let owner = output.clientOwner { engine.setNativeClientOwner(owner) }
         return engine.handleNative(keyboardEvent)
     }
 
@@ -88,7 +78,7 @@ final class NativeInputEngine: NSObject {
 
     func deactivateNativeOutput(_ output: NativeNotionOutput) {
         guard nativeOutput === output else { return }
-        if output.usesClientRoute { engine?.setNativeClientRoute(false) }
+        if output.usesClientRoute { engine?.setNativeClientOwner(nil) }
         else { engine?.reset() }
         nativeOutput = nil
     }

@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import HannyeongCore
+@testable import HannyeongInputRuntime
 
 private func require(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
     if try !value() { throw DirectFailure(detail: message) }
@@ -80,13 +81,27 @@ private final class Harness {
     let nativeMode: Bool
     let runtime: DirectRuntime?
     private(set) var runtimeBoundaryCount = 0
-    init(nativeMode: Bool = false, runtime: DirectRuntime? = nil) {
+    private let editor: CachedSelectionTextView?
+    private lazy var nativeOutput = editor.map { NativeNotionOutput(client: $0, clientOwner: .openAI) }
+    init(nativeMode: Bool = false, runtime: DirectRuntime? = nil, editor: CachedSelectionTextView? = nil) {
+        self.editor = editor
         self.nativeMode = nativeMode
         self.runtime = runtime
     }
     let proxy = CGEventTapProxy(bitPattern: 1)!
     let pid = getpid() + 1234
-    var text = ""
+    private var buffer = ""
+    var text: String {
+        get { editor?.string ?? buffer }
+        set {
+            if let editor {
+                editor.string = newValue
+                editor.setSelectedRange(NSRange(location: newValue.utf16.count, length: 0))
+            } else {
+                buffer = newValue
+            }
+        }
+    }
     var submitted: [String] = []
     var errors: [Error] = []
     var wakeCount = 0
@@ -144,6 +159,11 @@ private final class Harness {
     } : nil,
     replaceNativeText: nativeMode ? { [self] count, replacement in
         try require(!inEventTap, "Notion IPC ran while the event tap held the host queue")
+        if let nativeOutput {
+            try nativeOutput.replace(deletingUTF16: count, with: replacement)
+            nativeReplacements += 1
+            return
+        }
         if failNativeReplacement { throw DirectFailure(detail: "QA Notion replacement failed") }
         // Observed in KakaoTalk 2026-11-12: insertText("") with a replacement range changes nothing.
         if replacement.isEmpty { ignoredEmptyNativeCommits += 1; return }
@@ -151,9 +171,10 @@ private final class Harness {
         try require(previous.length >= count, "Notion replacement exceeded the UTF16 suffix")
         text = previous.substring(to: previous.length - count) + replacement
         nativeReplacements += 1
-    } : nil, resetNativeText: { [self] afterHostDeletion in
-        if afterHostDeletion { nativeHostDeletionResets += 1 }
-    },
+    } : nil, resetNativeText: { [self] reason in
+        nativeOutput?.reset(reason)
+        if reason == .hostBackspace { nativeHostDeletionResets += 1 }
+    }, advanceNativeText: { [self] in nativeOutput?.advance(utf16: $0) },
     refreshRoute: { [self] reason in
         routeRefreshes += 1
         routeMonitor?.refresh(reason)
@@ -229,15 +250,16 @@ private final class Harness {
             var delivered = input.receive(proxy, event.type, event) != nil
             inEventTap = false
             if delivered, down, nativeMode, targetPID == nil,
-               focusChecks.hostBundleID == "notion.id" || focusChecks.hostBundleID == TypingEngine.clientOwnedBundleID {
+               focusChecks.hostBundleID == "notion.id" || TypingEngine.clientOwner(for: focusChecks.hostBundleID) != nil {
                 delivered = !input.receiveNative(event)
             }
             keyDurations.append(CFAbsoluteTimeGetCurrent() - began)
             if delivered {
                 if down { deliveredPhysical.append(text) }
                 host(event, physicalText: text)
-            } else if down, nativeMode, physicalCode == 51, focusChecks.hostBundleID == "notion.id" {
-                // Observed in Notion 2026-11-12: its key handler deletes even when IMK consumes Backspace.
+            } else if down, nativeMode, physicalCode == 51,
+                      ["notion.id", "com.openai.codex"].contains(focusChecks.hostBundleID) {
+                // Both Chromium hosts delete even when IMK consumes Backspace.
                 host(event, physicalText: text)
             }
         }
@@ -343,6 +365,12 @@ private final class Harness {
 struct DirectInputQA {
     @MainActor static func main() async {
         do {
+            if CommandLine.arguments.dropFirst().elementsEqual(["--native-editing"]) {
+                try await nativeBackspaceChecks()
+                try await clientCommandDeleteChecks()
+                try await clientOwnedDeliveryChecks()
+                return
+            }
             if CommandLine.arguments.contains("--event-tap-recovery") {
                 try processEventTapRecoveryChecks()
                 return
@@ -592,6 +620,7 @@ struct DirectInputQA {
     @MainActor static func run() async throws {
         try await routeChecksDuringTyping()
         try await nativeBackspaceChecks()
+        try await clientCommandDeleteChecks()
         try await clientOwnedDeliveryChecks()
         try await eventTapRecoveryChecks()
         try await notionNativeDeliveryChecks()
@@ -1362,10 +1391,10 @@ struct DirectInputQA {
             }
             defer { CFMachPortInvalidate(tap) }
             let h = Harness(nativeMode: true)
-            h.focusChecks.hostBundleID = TypingEngine.clientOwnedBundleID
+            h.focusChecks.hostBundleID = "com.kakao.KakaoTalkMac"
             h.input.enableForQA(keyboardTap: observer ? nil : tap, observerTap: observer ? tap : nil)
             h.input.clientOwnedPID = h.pid
-            h.input.setNativeClientRoute(true)
+            h.input.setNativeClientOwner(.kakaoTalk)
             let disabled = CGEvent(source: nil)!
             disabled.type = .tapDisabledByTimeout
             for _ in 0..<2 {
@@ -1544,13 +1573,13 @@ struct DirectInputQA {
     }
 
     @MainActor static func nativeBackspaceChecks() async throws {
-        for bundleID in [TypingEngine.clientOwnedBundleID, "notion.id"] {
+        for bundleID in ["com.kakao.KakaoTalkMac", "com.openai.codex", "notion.id"] {
             let h = Harness(nativeMode: true)
             h.focusChecks.hostBundleID = bundleID
             h.input.enableForQA()
-            if bundleID == TypingEngine.clientOwnedBundleID {
+            if let owner = TypingEngine.clientOwner(for: bundleID) {
                 h.input.clientOwnedPID = h.pid
-                h.input.setNativeClientRoute(true)
+                h.input.setNativeClientOwner(owner)
             } else {
                 h.input.updateRoute(try h.focusChecks.capture(h.pid), known: true)
             }
@@ -1578,36 +1607,100 @@ struct DirectInputQA {
             try require(h.nativeHostDeletionResets == 0, "Owned Backspaces were treated as external deletions")
             h.input.reset()
             h.key("", code: 51)
-            try require(h.nativeHostDeletionResets == (bundleID == "notion.id" ? 1 : 0),
-                        "Only a Notion Backspace outside composition should invalidate the next caret anchor")
+            let expectedResets = bundleID == "com.kakao.KakaoTalkMac" ? 0 : 1
+            try require(h.nativeHostDeletionResets == expectedResets,
+                        "\(bundleID) used the wrong caret anchor after a host Backspace")
         }
-        print("PASS Kakao/Notion IMK Backspace: one trailing unit per press with hosts that ignore empty commits, typing continues at the end")
+        print("PASS Kakao/OpenAI/Notion IMK Backspace: one trailing unit per press with hosts that ignore empty commits, typing continues at the end")
+    }
+
+    @MainActor static func clientCommandDeleteChecks() async throws {
+        func deleteKey(_ h: Harness, down: Bool, flags: CGEventFlags, target: pid_t) throws {
+            let event = CGEvent(keyboardEventSource: nil, virtualKey: 51, keyDown: down)!
+            event.flags = flags
+            event.setIntegerValueField(.eventSourceUnixProcessID, value: 0)
+            event.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(target))
+            event.keyboardSetUnicodeString(stringLength: 0, unicodeString: nil)
+            h.input.observeCommand(event.type, event)
+            try require(h.input.receive(h.proxy, event.type, event) != nil, "Command-Delete was consumed")
+        }
+        for releasedFlags: CGEventFlags in [[], .maskCommand] {
+            let h = Harness(nativeMode: true)
+            h.focusChecks.hostBundleID = "com.openai.codex"
+            h.input.enableForQA()
+            h.input.clientOwnedPID = h.pid
+            h.input.setNativeClientOwner(.openAI)
+            h.key("d")
+            try deleteKey(h, down: true, flags: .maskCommand, target: h.pid + 1)
+            try deleteKey(h, down: false, flags: releasedFlags, target: h.pid + 1)
+            h.key("k")
+            try require(h.text == "아", "Another app's Command-Delete interrupted Korean composition: \(h.text)")
+            h.input.reset()
+            try await h.resolve("d")
+        }
+
+        for (command, targeted): (Int64, Bool) in [(55, true), (54, true), (54, false)] {
+            for commandReleasedFirst in [false, true] {
+                let editor = CachedSelectionTextView(frame: .zero)
+                editor.clampsReplacementAtEnd = true
+                let h = Harness(nativeMode: true, editor: editor)
+                let prefix = targeted ? "" : "📌 앞줄\n"
+                h.text = prefix
+                h.focusChecks.hostBundleID = "com.openai.codex"
+                h.input.enableForQA()
+                h.input.clientOwnedPID = h.pid
+                h.input.setNativeClientOwner(.openAI)
+                h.type("dkssud")
+                try require(h.text == prefix + "안녕", "OpenAI Command-Delete fixture did not start in Korean")
+                h.modifier(code: command, down: true, time: 1_000_000_000)
+                let target: pid_t = targeted ? h.pid : 0
+                // The host deletes the line without forwarding this shortcut to IMK.
+                try deleteKey(h, down: true, flags: .maskCommand, target: target)
+                editor.setSelectedRange(NSRange(location: prefix.utf16.count, length: "안녕".utf16.count))
+                editor.deleteBackward(nil)
+                try require(editor.string == prefix, "Host failed to clear the current line")
+                editor.reportedSelection = NSRange(location: prefix.utf16.count, length: 0)
+                if !commandReleasedFirst { try deleteKey(h, down: false, flags: .maskCommand, target: target) }
+                h.modifier(code: command, down: false, time: 1_100_000_000)
+                if commandReleasedFirst { try deleteKey(h, down: false, flags: [], target: target) }
+                h.type("rksk")
+                try require(h.text == prefix + "가나" && h.input.enabled && h.errors.isEmpty,
+                            "OpenAI Command-Delete (command=\(command), command released first=\(commandReleasedFirst)) produced \(h.text.debugDescription), errors=\(h.errors)")
+                h.input.reset()
+                try await h.resolve("d")
+            }
+        }
+        print("PASS OpenAI host Command-Delete leaves the next word in Korean for either Command key and release order")
     }
 
     @MainActor static func clientOwnedDeliveryChecks() async throws {
-        let h = Harness(nativeMode: true)
-        h.focusChecks.hostBundleID = TypingEngine.clientOwnedBundleID
-        h.focusChecks.failsAX = true
-        h.input.enableForQA()
-        h.input.clientOwnedPID = h.pid
-        h.input.setNativeClientRoute(true)
-        h.input.updateRoute(nil, known: false)
-        h.input.beginRouteCheck()
-        h.key("d")
-        try require(h.text == "ㅇ" && h.nativeReplacements == 1 && h.outputEventCount == 0,
-                    "The first IMK key did not compose before AX focus was available")
-        try await h.waitForRequest()
-        h.input.updateRoute(nil, known: true)
-        h.type("kssud")
-        try require(h.text == "안녕" && h.focusChecks.captureCount == 0,
-                    "A background focus change interrupted the IMK word or the key waited for AX")
-        h.key("", code: 36)
-        try require(h.submitted == ["안녕"], "IMK input delayed or duplicated Return")
-        h.input.setNativeClientRoute(false)
-        try await h.resolve("d")
-        try require(h.text.isEmpty && h.errors.isEmpty,
-                    "A decision from the old IMK client changed text after deactivation")
-        print("PASS Kakao IMK ownership: first key composes without AX, Return passes once, and late results expire on deactivation")
+        for bundleID in ["com.kakao.KakaoTalkMac", "com.openai.codex"] {
+            let h = Harness(nativeMode: true)
+            h.focusChecks.hostBundleID = bundleID
+            h.focusChecks.failsAX = true
+            h.input.enableForQA()
+            if let owner = TypingEngine.clientOwner(for: bundleID) {
+                h.input.clientOwnedPID = h.pid
+                h.input.setNativeClientOwner(owner)
+            }
+            h.input.updateRoute(nil, known: false)
+            h.input.beginRouteCheck()
+            h.key("d")
+            try require(h.text == "ㅇ" && h.nativeReplacements == 1 && h.outputEventCount == 0,
+                        "\(bundleID) did not compose its first IMK key before AX focus was available: \(h.text)")
+            try await h.waitForRequest()
+            h.input.updateRoute(nil, known: true)
+            h.type("kssud")
+            try require(h.text == "안녕" && h.focusChecks.captureCount == 0,
+                        "\(bundleID) lost compose state or waited for AX focus: \(h.text)")
+            h.key("", code: 36)
+            try require(h.submitted == ["안녕"], "\(bundleID) delayed or duplicated Return")
+            h.input.clientOwnedPID = nil
+            try await h.resolve("d")
+            try require(h.text.isEmpty && h.errors.isEmpty,
+                        "\(bundleID) applied a decision to the old IMK client after deactivation")
+        }
+        print("PASS Kakao/OpenAI IMK ownership: first key composes without AX, Return passes once, and late results expire on deactivation")
     }
 
     @MainActor static func notionNativeDeliveryChecks() async throws {
