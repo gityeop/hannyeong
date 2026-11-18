@@ -319,7 +319,7 @@ final class DirectInputTap {
         if type == .keyDown, yieldsKeyToInputClient(event) {
             // ChatGPT can delete the line without forwarding Command-Delete to IMK.
             if isOpenAICommandDelete(event), targetsForegroundInputClient(event) {
-                reset(afterHostDeletion: true)
+                reset()
             }
             return
         }

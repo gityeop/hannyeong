@@ -27,7 +27,10 @@ final class NativeNotionOutput {
 
     func reset(afterHostDeletion: Bool = false) {
         caret = nil
-        if afterHostDeletion { readCaretOnNextReplacement = true }
+        if afterHostDeletion || clientOwner == .openAI {
+            // ChatGPT can still report the cleared line's start after the first new insertion.
+            readCaretOnNextReplacement = afterHostDeletion
+        }
     }
     func advance(_ text: String) { advance(utf16: text.utf16.count) }
     /// A negative count follows a host Backspace over owned text.
