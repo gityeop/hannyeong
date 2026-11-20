@@ -7,7 +7,7 @@
   --btn-bg: #0b0b0c; --btn-ink: #ffffff; --btn-hover: #2a2a2e;
   --btn2-bg: #ffffff; --btn2-hover: #f6f8f1;
   --nav-bg: rgb(255 255 255 / .8);
-  --glow: radial-gradient(closest-side, rgb(216 245 107 / .38), rgb(216 245 107 / .12) 55%, transparent);
+  --glow: none;
   --shadow: 0 1px 2px rgb(0 0 0 / .04), 0 18px 40px -24px rgb(0 0 0 / .22);
   --key-bg: #ffffff; --key-border: #d9d9de; --popup-bg: #ffffff;
   --cap-side-a: #ebebeb; --cap-side-b: #cccccc; --cap-top-a: #ffffff; --cap-top-b: #f6f6f6; --cap-label: #4d4d4d; --cap-edge: #ffffff;
