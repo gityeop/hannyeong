@@ -50,7 +50,8 @@ class HeroTitle {
     row.style.setProperty('--merged-width', `${firstWidth + chars[9].offsetWidth}px`);
     row.classList.toggle('is-merged', this.shown >= 0.98);
     this.root.querySelector('[data-title-second]').style.transform = `translate(${p * firstWidth}px, ${-p * 1.08}em)`;
-    row.style.transform = `scale(${1 - p * 0.08 + Math.sin(Math.PI * finish) * 0.018})`;
+    // The title is centred, so shift it left by half of the first glyph as the second line slides under it.
+    row.style.transform = `translateX(${-p * firstWidth / 2}px) scale(${1 - p * 0.08 + Math.sin(Math.PI * finish) * 0.018})`;
     row.style.height = `${2.16 - p * 1.08}em`;
   }
 }
@@ -138,7 +139,7 @@ class TypingDemo {
     }
     const plan = timeline.plan;
     if (this.still) clock = plan[plan.length - 1].commit + 1000;
-    const cap = 'display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 28px; height: 30px; padding: 0 8px; font-family: \'JetBrains Mono\', ui-monospace, Menlo, monospace; font-size: 13px; border: 1px solid #d9ddda; border-radius: 7px; background: #fbfcfb; ';
+    const cap = 'display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 28px; height: 30px; padding: 0 8px; font-family: \'JetBrains Mono\', ui-monospace, Menlo, monospace; font-size: 13px; color: var(--ink); border: 1px solid var(--key-border); border-radius: 7px; background: var(--key-bg); ';
     const keyStyle = (age, extra) => {
       const p = ease(age / 180);
       const down = age < 90;
@@ -151,7 +152,7 @@ class TypingDemo {
     const keys = [];
     if (active) {
       active.presses.forEach((at, i) => { if (at <= clock) keys.push({ label: active.keys[i], style: keyStyle(clock - at) }); });
-      if (active.commit <= clock) keys.push({ label: 'space', style: keyStyle(clock - active.commit, 'min-width: 70px; color: #5f636b; font-size: 11px; ') });
+      if (active.commit <= clock) keys.push({ label: 'space', style: keyStyle(clock - active.commit, 'min-width: 70px; color: var(--muted); font-size: 11px; ') });
     }
     const words = plan.filter((word) => word.commit <= clock).map((word) => {
       const p = ease((clock - word.commit) / 380);
@@ -166,7 +167,7 @@ class TypingDemo {
       words,
       raw: this.compose(typing),
       rawKeys: typing,
-      caretStyle: 'display: inline-block; width: 2px; height: .95em; background: #0e1015; vertical-align: -.1em; margin-left: 3px; transition: opacity .12s ease; opacity: ' + (caretOn ? 1 : 0)
+      caretStyle: 'display: inline-block; width: 2px; height: .95em; background: currentColor; vertical-align: -.1em; margin-left: 3px; transition: opacity .12s ease; opacity: ' + (caretOn ? 1 : 0)
     };
   }
   render() {
@@ -268,8 +269,8 @@ class Keycap {
       shadowBlur: ((6 - d / 4) / 2).toFixed(2),
       beforeStyle: fade + word + (shown ? off : on),
       afterStyle: fade + word + (shown ? on : off),
-      waitStyle: fade + 'font-size: 14px; color: #8a8f97; ' + (shown ? off : on),
-      popupStyle: fade + 'display: flex; flex-direction: column; gap: 2px; background: #ffffff; border: 1px solid #e3e6e4; border-radius: 12px; padding: 5px; box-shadow: 0 10px 24px -12px rgba(14,16,21,.3); min-width: 150px; ' + (shown ? on : off)
+      waitStyle: fade + 'font-size: 14px; color: var(--subtle); ' + (shown ? off : on),
+      popupStyle: fade + 'display: flex; flex-direction: column; gap: 2px; background: var(--popup-bg); border: 1px solid var(--line-strong); border-radius: 12px; padding: 5px; box-shadow: 0 10px 24px -12px rgba(0,0,0,.35); min-width: 150px; ' + (shown ? on : off)
     };
   }
   render() {
@@ -285,6 +286,37 @@ class Keycap {
     }
   }
 
+}
+
+const THEME_KEY = 'hannyeong.theme';
+const themeToggle = document.querySelector('[data-theme-toggle]');
+const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+const currentTheme = () => document.documentElement.dataset.theme || (systemDark.matches ? 'dark' : 'light');
+const labelThemeToggle = () => {
+  themeToggle.setAttribute('aria-label', currentTheme() === 'dark' ? '밝은 화면으로 바꾸기' : '어두운 화면으로 바꾸기');
+};
+themeToggle.addEventListener('click', () => {
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem(THEME_KEY, next); } catch (error) { /* 저장할 수 없으면 이번 방문에만 적용합니다. */ }
+  labelThemeToggle();
+});
+systemDark.addEventListener('change', labelThemeToggle);
+labelThemeToggle();
+
+const navLinks = Array.from(document.querySelectorAll('.nav-links a[href^="#"]'));
+const navObserver = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    for (const link of navLinks) {
+      if (link.getAttribute('href') === `#${entry.target.id}`) link.setAttribute('aria-current', 'true');
+      else link.removeAttribute('aria-current');
+    }
+  }
+}, { rootMargin: '-45% 0px -50% 0px' });
+for (const link of navLinks) {
+  const target = document.querySelector(link.getAttribute('href'));
+  if (target) navObserver.observe(target);
 }
 
 const introVideo = document.querySelector('[data-scroll-play]');
