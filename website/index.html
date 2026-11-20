@@ -7,26 +7,34 @@
   <meta name="description" content="앱 안의 작은 인공지능 모델이 한글인지 영어인지 문맥을 보고 바꿉니다. Mac용 한녕 입력기.">
   <link rel="canonical" href="https://hannyeong.app/">
   <link rel="icon" href="./assets/icon.png">
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
-  <link rel="stylesheet" href="./styles.css?v=spacing-20261105-2">
-  <script type="module" src="./main.js?v=20261020-scroll-video"></script>
+  <meta name="color-scheme" content="light dark">
+  <script>try { const theme = localStorage.getItem('hannyeong.theme'); if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme; } catch (e) {}</script>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&amp;family=Noto+Sans+KR:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+  <link rel="stylesheet" href="./styles.css?v=identity-20261120">
+  <script type="module" src="./main.js?v=20261120-identity"></script>
   <script type="module" src="./analytics.js?v=20261020-consent"></script>
 </head>
 <body>
-  <nav class="site-nav shell" aria-label="사이트 메뉴">
-    <a class="brand" href="#top"><img src="./assets/icon.png" alt="" width="36" height="36">한녕</a>
-    <div class="nav-links"><a href="#how">기능</a><a href="#privacy">개인정보</a><a href="#install">설치</a><a href="https://github.com/gityeop/hannyeong">GitHub</a><a href="https://github.com/gityeop/hannyeong-community/discussions" target="_blank" rel="noopener">커뮤니티 ↗</a></div>
-  </nav>
+  <header class="site-header">
+    <nav class="site-nav shell" aria-label="사이트 메뉴">
+      <a class="brand" href="#top"><img src="./assets/icon.png" alt="" width="30" height="30">한녕</a>
+      <div class="nav-links"><a href="#how">기능</a><a href="#compare">비교</a><a href="#privacy">개인정보</a><a href="#install">설치</a><a href="https://github.com/gityeop/hannyeong-community/discussions" target="_blank" rel="noopener">커뮤니티</a></div>
+      <div class="nav-actions">
+        <a class="nav-pill" href="https://github.com/gityeop/hannyeong"><svg class="github-mark" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
+        <button class="theme-toggle" type="button" data-theme-toggle aria-label="화면 테마 바꾸기"><svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg><svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+      </div>
+    </nav>
+  </header>
   <main class="shell" id="top">
     <div class="hero-scroll">
     <header class="hero">
       <div class="hero-copy">
-        <p class="eyebrow">Mac을 위한 한·영 자동 전환 입력기</p>
+        <p class="hero-badge"><span class="badge-dot" aria-hidden="true"></span>Mac을 위한 한·영 자동 전환 입력기</p>
         <div id="hn-hero-pin">
           <h1 data-hero-row aria-label="한영키 이제는 안녕"><span class="merge-underline" aria-hidden="true"></span><svg class="merge-sparkles" viewBox="0 0 240 140" aria-hidden="true"><g fill="#d8f56b" stroke="#525d29" stroke-width=".7"><path d="M26 18l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/><path d="M110 5l2 4 4 2-4 2-2 4-2-4-4-2 4-2z"/><path d="M219 35l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/><path d="M198 110l2 4 4 2-4 2-2 4-2-4-4-2 4-2z"/><path d="M48 112l2 4 4 2-4 2-2 4-2-4-4-2 4-2z"/></g><g fill="#444a31"><circle cx="61" cy="10" r="1.2"/><circle cx="173" cy="22" r="1.4"/><circle cx="232" cy="81" r="1.2"/><circle cx="17" cy="82" r="1.3"/><circle cx="144" cy="129" r="1.2"/></g></svg><span class="title-line"><span aria-hidden="true" data-char>한</span><span aria-hidden="true" data-char>영</span><span aria-hidden="true" data-char>키</span><span aria-hidden="true" data-char> </span></span><span class="title-line" data-title-second><span aria-hidden="true" data-char>이</span><span aria-hidden="true" data-char>제</span><span aria-hidden="true" data-char>는</span><span aria-hidden="true" data-char> </span><span aria-hidden="true" data-char>안</span><span aria-hidden="true" data-char>녕</span></span></h1>
         </div>
         <p class="hero-description">앱 안의 작은 인공지능 모델이 한글인지 영어인지 문맥을 보고 바꿉니다.</p>
-        <div class="hero-actions"><a class="button" data-download-location="hero" href="https://github.com/gityeop/hannyeong/releases/download/v0.4.23/Hannyeong-0.4.23-arm64.pkg">다운로드 v0.4.23 <span aria-hidden="true">↓</span></a><a class="source-link" href="https://github.com/gityeop/hannyeong">소스 코드 보기 <span aria-hidden="true">↗</span></a></div>
+        <div class="hero-actions"><a class="button" data-download-location="hero" href="https://github.com/gityeop/hannyeong/releases/download/v0.4.23/Hannyeong-0.4.23-arm64.pkg">다운로드 v0.4.23 <span aria-hidden="true">↓</span></a><a class="button button-secondary" href="https://github.com/gityeop/hannyeong"><svg class="github-mark" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>소스 코드 보기</a></div>
         <p class="requirements">macOS 15 이상 · Apple silicon · Apple 공증 완료</p>
       </div>
       <div class="demo-backdrop">
@@ -41,11 +49,11 @@
 
     <section class="video-feature" aria-labelledby="h-video">
       <video src="./assets/intro-1080p.mp4" poster="./assets/poster-1080p.jpg" data-scroll-play muted loop controls playsinline preload="metadata" aria-label="한녕 소개 영상"></video>
-      <div class="video-copy"><h2 id="h-video">치는 대로,<br>맞는 글자로</h2><p>한글과 영어를 섞어도 자연스럽게.</p></div>
+      <div class="video-copy"><p class="eyebrow">영상</p><h2 id="h-video">치는 대로,<br><span class="pen">맞는 글자로</span></h2><p>한글과 영어를 섞어도 자연스럽게.</p></div>
     </section>
 
     <section id="how" aria-labelledby="h-how">
-      <h2 id="h-how">필요한 순간엔, 오른쪽 ⌘</h2>
+      <div class="section-head"><p class="eyebrow">단축키</p><h2 id="h-how">필요한 순간엔, <span class="pen">오른쪽 ⌘</span></h2></div>
       <div class="shortcuts"><article class="shortcut" data-keycap="1">
       <svg width="168" height="140" viewBox="0 0 168 140" aria-hidden="true">
     <defs>
@@ -86,7 +94,7 @@
     </section>
 
     <section id="compare" aria-labelledby="h-compare">
-      <h2 id="h-compare">규칙 대신, 문맥을 읽는 모델</h2>
+      <div class="section-head"><p class="eyebrow">비교</p><h2 id="h-compare">규칙 대신, <span class="pen">문맥</span>을 읽는 모델</h2></div>
       <div class="comparison-scroll" tabindex="0" role="region" aria-label="한녕과 다른 자동 전환 입력기 비교">
         <table><thead><tr><td></td><th scope="col">한녕</th><th scope="col">다른 자동 전환 입력기</th></tr></thead>
         <tbody>
@@ -98,8 +106,7 @@
     </section>
 
     <section class="input-features" id="input-features" aria-labelledby="h-input-features">
-      <p class="eyebrow">한녕이 다른 점</p>
-      <h2 id="h-input-features">자동 전환에서 한 걸음 더</h2>
+      <div class="section-head"><p class="eyebrow">한녕이 다른 점</p><h2 id="h-input-features">자동 전환에서 <span class="pen">한 걸음 더</span></h2></div>
       <div class="feature-grid">
         <article class="input-feature" aria-labelledby="h-default-preview">
           <div class="feature-copy"><h3 id="h-default-preview">입력 중 기본 표시</h3><p>입력 중인 글자를 한글·영어 중 어떤 언어로 볼지 고르세요. <strong>앱별로도 따로 설정</strong>할 수 있어, 메모는 한글로, 코드 편집기는 영어로 표시할 수 있습니다.</p></div>
@@ -127,25 +134,27 @@
 
     <section class="privacy-band" id="privacy" aria-labelledby="h-privacy">
       <svg width="76" height="64" viewBox="0 0 76 64" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round" aria-hidden="true"><rect x="12" y="8" width="52" height="37" rx="5"/><path d="M5 48h25l3 3h10l3-3h25l-4 8H9z"/></svg>
-      <div><h2 id="h-privacy">입력 내용은 이 Mac 밖으로 나가지 않습니다</h2><p>판별은 앱 안의 로컬 모델이 이 Mac에서만 하고, 입력 내용은 전송하지 않습니다.<br>업데이트 확인과 다운로드에만 네트워크를 사용합니다. 교정 기억은 로컬에 저장하며, 사용 데이터는 수집하지 않습니다.</p></div>
+      <div><p class="eyebrow">개인정보</p><h2 id="h-privacy">입력 내용은 <span class="pen">이 Mac 밖으로</span> 나가지 않습니다</h2><p>판별은 앱 안의 로컬 모델이 이 Mac에서만 하고, 입력 내용은 전송하지 않습니다.<br>업데이트 확인과 다운로드에만 네트워크를 사용합니다. 교정 기억은 로컬에 저장하며, 사용 데이터는 수집하지 않습니다.</p></div>
     </section>
 
     <section id="install" aria-labelledby="h-install">
-      <div class="install-main"><div><h2 id="h-install">설치는 간단하게.</h2><ol class="install-steps"><li><span>1</span>pkg 열기</li><li><span>2</span>설치</li><li><span>3</span>메뉴바에서 한녕 선택</li></ol><p class="install-note">보이지 않으면 로그아웃 후 다시 로그인하세요.</p></div><div class="install-download"><a class="button" data-download-location="install" href="https://github.com/gityeop/hannyeong/releases/download/v0.4.23/Hannyeong-0.4.23-arm64.pkg">다운로드 v0.4.23 <span aria-hidden="true">↓</span></a><p class="requirements">macOS 15 이상 · Apple silicon</p></div></div>
+      <div class="install-main"><div><p class="eyebrow">설치</p><h2 id="h-install">설치는 <span class="pen">간단하게.</span></h2><ol class="install-steps"><li><span>1</span>pkg 열기</li><li><span>2</span>설치</li><li><span>3</span>메뉴바에서 한녕 선택</li></ol><p class="install-note">보이지 않으면 로그아웃 후 다시 로그인하세요.</p></div><div class="install-download"><a class="button" data-download-location="install" href="https://github.com/gityeop/hannyeong/releases/download/v0.4.23/Hannyeong-0.4.23-arm64.pkg">다운로드 v0.4.23 <span aria-hidden="true">↓</span></a><p class="requirements">macOS 15 이상 · Apple silicon</p></div></div>
       <details class="install-details"><summary>설치 요구 사항과 한영키 설정 안내</summary>
         <dl class="specs"><div><dt>macOS</dt><dd>15 이상 (macOS 27.2에서 확인)</dd></div><div><dt>Mac</dt><dd>Apple silicon (M1 이후)</dd></div><div><dt>자판</dt><dd>두벌식</dd></div><div><dt>용량</dt><dd>약 100MB (판별 모델과 실행 환경 포함)</dd></div></dl>
         <h3>한영키 정리하기</h3><p>처음 한 번만. 오른쪽 ⌘를 한녕이 쓰도록 비워 둡니다.</p>
         <div class="guide-grid"><figure><img src="./assets/input-source-shortcut-guide.png" loading="lazy" alt="키보드 단축키 설정의 입력 소스 항목. 이전 입력 소스 선택 체크를 끈 모습"><figcaption><h4>입력 소스 전환 끄기</h4><p>시스템 설정 → 키보드 → 키보드 단축키 → 입력 소스에서 체크 해제</p></figcaption></figure><figure><img src="./assets/karabiner-command-guide.png" loading="lazy" alt="Karabiner-Elements 설정에서 right_command를 f19로 바꾸는 항목을 삭제하는 모습"><figcaption><h4>오른쪽 ⌘ 매핑 삭제</h4><p>Karabiner-Elements를 쓴다면 right_command 항목 삭제</p></figcaption></figure></div>
       </details>
     </section>
+    <div class="cta-grid">
     <section class="community-band" id="community" aria-labelledby="h-community">
-      <div><h2 id="h-community">한녕, 함께 다듬어요.</h2><p>궁금한 점이나 있었으면 하는 기능을 남겨 주세요.</p></div>
+      <div><p class="eyebrow">커뮤니티</p><h2 id="h-community">한녕, 함께 다듬어요.</h2><p>궁금한 점이나 있었으면 하는 기능을 남겨 주세요.</p></div>
       <a class="button" href="https://github.com/gityeop/hannyeong-community/discussions" target="_blank" rel="noopener">GitHub 커뮤니티 참여하기 <span aria-hidden="true">↗</span></a>
     </section>
     <section class="support-band" id="support" aria-labelledby="h-support">
-      <div><h2 id="h-support">한녕이 도움이 되었다면</h2><p>한녕을 계속 다듬고 유지할 수 있도록 응원해 주세요.<br>보내주신 후원은 개발과 유지 비용에 보탬이 됩니다.</p><p class="support-note">후원 여부와 관계없이 한녕의 모든 기능을 사용할 수 있습니다.</p></div>
+      <div><p class="eyebrow">후원</p><h2 id="h-support">한녕이 도움이 되었다면</h2><p>한녕을 계속 다듬고 유지할 수 있도록 응원해 주세요.<br>보내주신 후원은 개발과 유지 비용에 보탬이 됩니다.</p><p class="support-note">후원 여부와 관계없이 한녕의 모든 기능을 사용할 수 있습니다.</p></div>
       <a class="button" href="https://fairy.hada.io/@hannyeong#support" target="_blank" rel="noopener">Fairy에서 후원하기 <span aria-hidden="true">↗</span></a>
     </section>
+    </div>
   </main>
   <footer class="site-footer shell"><div><a class="brand" href="#top"><img src="./assets/icon.png" alt="" width="28" height="28">한녕</a><span class="footer-divider"></span><a href="https://github.com/gityeop/hannyeong">GitHub ↗</a><a href="https://github.com/gityeop/hannyeong-community/discussions" target="_blank" rel="noopener">커뮤니티 ↗</a><button class="analytics-settings" type="button" data-analytics-settings>이용 분석 설정</button></div><p>설치나 사용 중 문제가 있으면 <a href="https://github.com/gityeop/hannyeong/issues">버그 제보</a>로 알려 주세요.</p></footer>
   <aside class="analytics-notice shell" id="website-analytics">
