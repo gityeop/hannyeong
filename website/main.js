@@ -167,7 +167,7 @@ class TypingDemo {
       words,
       raw: this.compose(typing),
       rawKeys: typing,
-      caretStyle: 'display: inline-block; width: 2px; height: .95em; background: currentColor; vertical-align: -.1em; margin-left: 3px; transition: opacity .12s ease; opacity: ' + (caretOn ? 1 : 0)
+      caretStyle: 'display: inline-block; width: 2px; height: .95em; background: var(--red); vertical-align: -.1em; margin-left: 3px; transition: opacity .12s ease; opacity: ' + (caretOn ? 1 : 0)
     };
   }
   render() {
@@ -303,6 +303,43 @@ themeToggle.addEventListener('click', () => {
 });
 systemDark.addEventListener('change', labelThemeToggle);
 labelThemeToggle();
+
+// 원고지 칸 라벨: 섹션 라벨을 한 글자씩 칸에 넣고, 화면에 들어오면 타이핑하듯 채웁니다.
+for (const label of document.querySelectorAll('.eyebrow')) {
+  const text = label.textContent.trim();
+  const readable = document.createElement('span');
+  readable.className = 'sr-only';
+  readable.textContent = text;
+  label.className = 'cells';
+  label.replaceChildren(readable, ...[...text].map((ch, i) => {
+    const cell = document.createElement('span');
+    cell.textContent = ch === ' ' ? '' : ch;
+    cell.style.setProperty('--i', i);
+    cell.setAttribute('aria-hidden', 'true');
+    return cell;
+  }));
+  const caret = document.createElement('span');
+  caret.className = 'cells-caret';
+  caret.style.setProperty('--i', text.length);
+  caret.setAttribute('aria-hidden', 'true');
+  label.append(caret);
+}
+if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  document.documentElement.classList.add('motion');
+  const revealObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      entry.target.classList.add('is-in');
+      revealObserver.unobserve(entry.target);
+    }
+  }, { threshold: 0.2 });
+  const targets = new Set();
+  for (const mark of document.querySelectorAll('main .cells, main .pen')) targets.add(mark.closest('section') || mark.parentElement);
+  for (const target of targets) {
+    target.classList.add('reveal');
+    revealObserver.observe(target);
+  }
+}
 
 const navLinks = Array.from(document.querySelectorAll('.nav-links a[href^="#"]'));
 const navObserver = new IntersectionObserver((entries) => {
