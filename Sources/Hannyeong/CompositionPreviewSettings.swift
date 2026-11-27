@@ -32,6 +32,10 @@ enum CompositionPreviewSettings {
         return AlternateSize(rawValue: raw)!
     }
 
+    static func liveEnabled(in defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: liveEnabledKey) as? Bool ?? true
+    }
+
     static func alternateEnabled(in defaults: UserDefaults) -> Bool {
         defaults.object(forKey: alternateEnabledKey) as? Bool ?? true
     }

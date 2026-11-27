@@ -16,7 +16,7 @@ final class NativeInputEngine: NSObject {
     private var prepared = false
     private var savePanel: NativeSheetReplacement?
     private weak var nativeOutput: NativeNotionOutput?
-    var experimentalEnabled: Bool { UserDefaults.standard.bool(forKey: CompositionPreviewSettings.liveEnabledKey) }
+    var liveDetectionEnabled: Bool { CompositionPreviewSettings.liveEnabled(in: .standard) }
 
     func prepare() {
         guard !prepared else { return }
@@ -106,7 +106,7 @@ final class NativeInputEngine: NSObject {
     }
     @objc private func preferencesChanged() {
         configure()
-        if !experimentalEnabled { synchronizeSource() }
+        if !liveDetectionEnabled { synchronizeSource() }
     }
     private func configure() {
         let defaults = UserDefaults.standard
@@ -119,7 +119,7 @@ final class NativeInputEngine: NSObject {
         guard let engine else { return }
         do {
             let selected = TypingEngine.currentSourceID
-            if selected == sourceID && experimentalEnabled {
+            if selected == sourceID && liveDetectionEnabled {
                 guard !failed else { return }
                 if !engine.enabled {
                     guard TypingEngine.hasKeyboardAccess else {
@@ -136,7 +136,7 @@ final class NativeInputEngine: NSObject {
             } else {
                 if engine.enabled {
                     try engine.pause()
-                    logger.notice("Native nonblocking typing paused; selectedSource=\(selected, privacy: .public) experimental=\(self.experimentalEnabled)")
+                    logger.notice("Native nonblocking typing paused; selectedSource=\(selected, privacy: .public) liveDetection=\(self.liveDetectionEnabled)")
                 }
                 failed = false
             }

@@ -20,6 +20,7 @@ private let ruleLexicon = try! WordFrequencies.load(URL(fileURLWithPath: ".build
         view.isRichText = false; view.string = prefix
         view.setSelectedRange(NSRange(location: prefix.utf16.count, length: 0))
         session = CompositionSession(client: view, corrections: store, localClient: local, wordFrequencies: ruleLexicon,
+                                     liveDetectionOverride: false,
                                      selectCommittedText: { [view] expected in
                                          let end = view.selectedRange().location
                                          guard end >= expected.utf16.count else {

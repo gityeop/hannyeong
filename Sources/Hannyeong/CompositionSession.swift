@@ -86,7 +86,7 @@ final class CompositionSession {
     private let entities: RegisteredEntitySettings
     private let liveDetectionOverride: Bool?
     private var liveDetectionEnabled: Bool {
-        liveDetectionOverride ?? previewDefaults.bool(forKey: CompositionPreviewSettings.liveEnabledKey)
+        liveDetectionOverride ?? CompositionPreviewSettings.liveEnabled(in: previewDefaults)
     }
     private let hostBundleID: String?
     private let onPreviewStart: (() -> Void)?
