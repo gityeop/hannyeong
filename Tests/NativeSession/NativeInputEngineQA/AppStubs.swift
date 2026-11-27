@@ -3,6 +3,9 @@ import InputMethodKit
 
 enum CompositionPreviewSettings {
     static let liveEnabledKey = "coordinator.qa.live"
+    static func liveEnabled(in defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: liveEnabledKey) as? Bool ?? true
+    }
 }
 enum PriorWordCorrectionSettings {
     static func enabled(in defaults: UserDefaults) -> Bool { true }
