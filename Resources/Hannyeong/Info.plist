@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.4.23</string>
+	<string>0.4.24</string>
 	<key>CFBundleVersion</key>
-	<string>186</string>
+	<string>187</string>
 	<key>InputMethodConnectionName</key>
 	<string>com.yeop.inputmethod.Hannyeong_Connection</string>
 	<key>InputMethodServerControllerClass</key>
