@@ -25,6 +25,7 @@ private final class Fixture {
         client.view = view
         session = CompositionSession(client: client, corrections: store, localClient: local, wordFrequencies: ruleLexicon,
                                      previewDefaults: defaults,
+                                     liveDetectionOverride: false,
                                      selectCommittedText: { [view, weak self] expected in
                                          self?.selectionAttempts += 1
                                          if let error = self?.selectionError { throw error }

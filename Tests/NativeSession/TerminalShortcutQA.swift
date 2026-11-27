@@ -40,7 +40,7 @@ private struct TerminalShortcutQA {
             client.view = view
             let sessionErrors = NSMutableArray()
             let session = CompositionSession(client: client, corrections: store, localClient: local,
-                previewDefaults: defaults, hostBundleID: "com.apple.Terminal") { sessionErrors.add($0) }
+                previewDefaults: defaults, hostBundleID: "com.apple.Terminal", liveDetectionOverride: false) { sessionErrors.add($0) }
             for char in "terminal" { _ = session.handle(key(String(char))) }
             client.reportsCompositionStartAfterCommit = true
             if space {

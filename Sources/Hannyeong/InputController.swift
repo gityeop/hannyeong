@@ -67,13 +67,13 @@ final class InputController: IMKInputController {
     }
 
     @objc private func preferencesChanged() {
-        guard isActiveController, directMode != NativeInputEngine.shared.experimentalEnabled,
+        guard isActiveController, directMode != NativeInputEngine.shared.liveDetectionEnabled,
               let client = client() as? any IMKTextInput else { return }
         synchronizeMode(for: client)
     }
 
     private func synchronizeMode(for client: any IMKTextInput) {
-        let direct = NativeInputEngine.shared.experimentalEnabled
+        let direct = NativeInputEngine.shared.liveDetectionEnabled
         if direct != directMode {
             rightCommand.cancel()
             closeFeedback()
@@ -111,7 +111,7 @@ final class InputController: IMKInputController {
         } else {
             prepareSession(for: client)
         }
-        shortcutLogger.notice("Input owner selected; experimental=\(direct) clientOwned=\(clientOwner != nil && direct) legacySession=\(self.session != nil)")
+        shortcutLogger.notice("Input owner selected; liveDetection=\(direct) clientOwned=\(clientOwner != nil && direct) legacySession=\(self.session != nil)")
     }
 
     private func prepareSession(for client: any IMKTextInput) {

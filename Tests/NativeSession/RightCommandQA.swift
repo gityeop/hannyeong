@@ -88,6 +88,7 @@ private struct RightCommandQA {
         view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
         let errors = NSMutableArray()
         let session = CompositionSession(client: view, corrections: store, localClient: local, wordFrequencies: ruleLexicon,
+                                     liveDetectionOverride: false,
                                      selectCommittedText: { [view] expected in
                                          let end = view.selectedRange().location
                                          guard end >= expected.utf16.count else {
@@ -172,6 +173,7 @@ private struct RightCommandQA {
         view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
         let errors = NSMutableArray()
         let session = CompositionSession(client: view, corrections: store, localClient: local, wordFrequencies: ruleLexicon,
+                                     liveDetectionOverride: false,
                                      selectCommittedText: { [view] expected in
                                          let end = view.selectedRange().location
                                          guard end >= expected.utf16.count else {
