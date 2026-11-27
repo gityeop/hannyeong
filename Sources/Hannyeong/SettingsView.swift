@@ -111,7 +111,7 @@ private struct GeneralSettingsView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("입력 중 자동 판별").font(.system(size: 14, weight: .medium))
-                                Text("Direct 방식으로 타이핑 중 한영을 판별합니다. 최근 입력 언어를 이어받고, 기존 교정 기록과 학습을 함께 사용합니다.")
+                                Text("타이핑하는 동안 한영을 자동으로 판별합니다.")
                                     .font(.system(size: 12)).foregroundStyle(.secondary)
                             }
                             Spacer()
