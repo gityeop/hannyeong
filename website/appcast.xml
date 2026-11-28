@@ -3,6 +3,21 @@
     <channel>
         <title>Hannyeong</title>
         <item>
+            <title>0.4.25</title>
+            <pubDate>Sat, 28 Nov 2026 14:06:05 +0900</pubDate>
+            <link>https://gityeop.github.io/hannyeong/</link>
+            <sparkle:version>188</sparkle:version>
+            <sparkle:shortVersionString>0.4.25</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description><![CDATA[<h2>한녕 0.4.25</h2>
+<ul>
+<li>입력 소스에서 ABC를 빼고 U.S. 등 다른 영문 자판을 쓰는 경우, 로그인 창이나 비밀번호 칸이 나올 때 한녕이 종료되고 재시동 전까지 쓸 수 없던 문제를 수정했습니다. 이제 켜져 있는 영문 자판으로 전환했다가 비밀번호 입력이 끝나면 한녕으로 돌아옵니다. (<a href="https://github.com/gityeop/hannyeong/issues/29">#29</a>)</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/gityeop/hannyeong/releases/download/v0.4.25/Hannyeong-0.4.25-arm64.zip" length="53510414" type="application/octet-stream" sparkle:edSignature="KKESKatnS6YZV3FBpvFqqLWeZIBjJ/jLDLtXNL7pfcM25Bpw5VFgr6bhEu/y0kV0GalYKbCNpUkLOLGmtTctAA=="/>
+        </item>
+        <item>
             <title>0.4.24</title>
             <pubDate>Fri, 27 Nov 2026 14:19:06 +0900</pubDate>
             <link>https://gityeop.github.io/hannyeong/</link>
