@@ -144,7 +144,7 @@ final class DirectSecureInputSource: NSObject {
 
     /// Prefers ABC, then the last used ASCII layout, then any enabled ASCII layout.
     private static func systemASCIILayout() -> String? {
-        let filter = [kTISPropertyInputSourceType: kTISTypeKeyboardLayout,
+        let filter = [kTISPropertyInputSourceType: kTISTypeKeyboardLayout!,
                       kTISPropertyInputSourceIsASCIICapable: true,
                       kTISPropertyInputSourceIsSelectCapable: true] as CFDictionary
         // A filter with no enabled match returns NULL, not an empty list.
