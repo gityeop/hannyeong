@@ -10,12 +10,14 @@ import Carbon
     var entries = 0
     var restorations = 0
     var time: TimeInterval = 0
+    var ascii: String? = "com.apple.keylayout.ABC"
     init(_ source: String) { self.source = source }
     func monitor(_ owner: String) -> DirectSecureInputSource {
         DirectSecureInputSource(sourceID: owner, entering: { self.entries += 1 }, restored: { self.restorations += 1 },
             isSecure: { self.secure || self.sudoPassword },
             currentSource: { self.reads += 1; return self.source },
-            selectSource: { self.selected.append($0); self.source = $0 }, now: { self.time })
+            selectSource: { self.selected.append($0); self.source = $0 },
+            asciiLayout: { self.ascii }, now: { self.time })
     }
     func settleExit(_ monitor: DirectSecureInputSource) {
         monitor.check()
@@ -81,6 +83,48 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
             try require(s.source == abc && s.selected == selected,
                         "A completed restoration overrode a later manual ABC selection")
             print("PASS late ABC after initial restoration returns to \(owner) once")
+        }
+        do {
+            // Issue #29: ABC disabled, another ASCII layout such as U.S. enabled.
+            let us = "com.apple.keylayout.US"
+            let s = State(owner), m = s.monitor(owner)
+            s.ascii = us
+            for cycle in 1...2 {
+                s.secure = true; m.check(); m.sourceChanged()
+                try require(s.source == us && m.isTemporaryABC(us) && !m.isTemporaryABC(abc),
+                            "Secure entry without ABC did not select the enabled ASCII layout")
+                s.secure = false; s.settleExit(m); m.sourceChanged()
+                try require(s.source == owner && s.restorations == cycle && !m.isTemporaryABC(us),
+                            "Secure exit without ABC did not restore \(owner) once")
+            }
+            try require(!s.selected.contains(abc) && s.selected == [us, owner, us, owner],
+                        "A disabled ABC layout was selected")
+            print("PASS secure input without ABC uses the enabled ASCII layout for \(owner)")
+        }
+        do {
+            let us = "com.apple.keylayout.US"
+            let s = State(owner), m = s.monitor(owner)
+            s.ascii = us
+            s.secure = true; m.check()
+            s.secure = false; m.check(); s.secure = true
+            s.source = owner; m.sourceChanged()
+            try require(s.source == us && s.entries == 1, "macOS reselecting the owner during secure input did not reselect U.S.")
+            s.secure = false; s.settleExit(m)
+            try require(s.source == owner && s.restorations == 1, "Owner was not restored after U.S. secure input")
+        }
+        do {
+            let s = State(owner), m = s.monitor(owner)
+            s.ascii = nil
+            s.secure = true; m.check(); m.sourceChanged()
+            try require(s.source == owner && s.selected.isEmpty && s.entries == 1,
+                        "Secure entry without any ASCII layout changed the source")
+            s.secure = false; s.settleExit(m)
+            try require(s.source == owner && s.restorations == 1 && s.selected.isEmpty,
+                        "Secure exit without any ASCII layout did not resume typing")
+            s.ascii = abc
+            s.secure = true; m.check()
+            try require(s.source == abc, "The monitor stopped working after an episode without an ASCII layout")
+            print("PASS secure input without any ASCII layout keeps \(owner) and keeps monitoring")
         }
         do {
             let s = State(owner), m = s.monitor(owner)
